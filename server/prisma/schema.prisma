@@ -7,77 +7,180 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// ============ SUBSCRIPTION / SAAS ============
+
+// Tier catalogue (static definitions — matches lib/utils TIERS on client)
+enum SubscriptionTier {
+  BASIC
+  PREMIUM
+  PRO
+}
+
 model Facility {
-  id               String               @id @default(uuid())
-  name             String
-  subscriptionTier String               @default("BASIC") // BASIC, PREMIUM, PRO
+  id               String                @id @default(uuid())
+  name             String                @unique
+  slug             String?               @unique // URL-friendly org slug
+  subscriptionTier SubscriptionTier      @default(BASIC) // BASIC, PREMIUM, PRO
+  // Branding (owner-only editable)
+  brandName        String? // Display name shown across the whole system
+  tagline          String?
+  logoEmoji        String?
+  address          String?
+  phone            String?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
   users            User[]
   inventories      Inventory[]
   sales            Sale[]
   expenses         Expense[]
   reconciliations  DailyReconciliation[]
-  createdAt        DateTime             @default(now())
-  updatedAt        DateTime             @updatedAt
+  products         Product[]
+  priceHistory     PriceHistory[]
+  stockMovements   StockMovement[]
+  rememberTokens   RememberToken[]
+}
+
+// Remember-me persistent sessions (per user+facility, auto-expire)
+model RememberToken {
+  id         String   @id @default(uuid())
+  facilityId String
+  facility   Facility @relation(fields: [facilityId], references: [id])
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
 }
 
 model User {
-  id          String   @id @default(uuid())
-  facilityId  String
-  facility    Facility @relation(fields: [facilityId], references: [id])
-  name        String
-  role        String   // OWNER, PHARMACIST, CASHIER
-  pinCode     String
-  createdAt   DateTime @default(now())
+  id         String          @id @default(uuid())
+  facilityId String
+  facility   Facility        @relation(fields: [facilityId], references: [id])
+  name       String
+  role       String // OWNER, PHARMACIST, CASHIER
+  pinCode    String
+  active     Boolean         @default(true) // disables login when owner "removes" user
+  createdAt  DateTime        @default(now())
+  sales      Sale[] // accountability: every sale attributed to cashier
+  rememberT  RememberToken[]
+  movements  StockMovement[]
 }
 
-model Inventory {
-  id           String    @id @default(uuid())
+// ============ CATALOG / PRICING ============
+
+// A product belongs to a facility, sellable in multiple units (tablet/strip/box)
+model Product {
+  id           String         @id @default(uuid())
   facilityId   String
-  facility     Facility  @relation(fields: [facilityId], references: [id])
-  drugName     String
-  unitType     String    // Tablet, Strip, Bottle, Box
+  facility     Facility       @relation(fields: [facilityId], references: [id])
+  name         String
+  genericName  String?
+  // Pricing per unit — a small shop can sell per tablet, strip AND box
+  tabletPrice  Float?
+  stripPrice   Float?
+  boxPrice     Float?
+  // Purchased (cost) — used to compute expected revenue
+  costPrice    Float          @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  inventories  Inventory[] // stock batches with expiry
+  priceHistory PriceHistory[]
+}
+
+model PriceHistory {
+  id         String   @id @default(uuid())
+  facilityId String
+  facility   Facility @relation(fields: [facilityId], references: [id])
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  oldCost    Float?
+  newCost    Float?
+  oldSell    Float?
+  newSell    Float?
+  changedBy  String? // user id
+  createdAt  DateTime @default(now())
+}
+
+// ============ STOCK / BATCHES ============
+
+// A stock line = a batch of a product at an expiry, in a given unit
+model Inventory {
+  id           String          @id @default(uuid())
+  facilityId   String
+  facility     Facility        @relation(fields: [facilityId], references: [id])
+  productId    String?
+  product      Product?        @relation(fields: [productId], references: [id])
+  drugName     String // denormalized search label
+  unitType     String // Tablet, Strip, Bottle, Box
   quantity     Int
   costPrice    Float
-  sellingPrice Float
+  sellingPrice Float // price of ONE of `unitType`
   expiryDate   DateTime?
-  reorderLevel Int       @default(10)
-  syncStatus   Boolean   @default(false)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  supplier     String?
+  batch        String?
+  reorderLevel Int             @default(10)
+  syncStatus   Boolean         @default(false)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  movements    StockMovement[]
 }
+
+// Audit of every stock change (restock, sale, adjustment) for provider attribution
+model StockMovement {
+  id          String    @id @default(uuid())
+  facilityId  String
+  facility    Facility  @relation(fields: [facilityId], references: [id])
+  inventoryId String
+  inventory   Inventory @relation(fields: [inventoryId], references: [id])
+  delta       Int // +restock, -sale
+  reason      String // SALE, RESTOCK, ADJUSTMENT, EXPIRED
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id])
+  createdAt   DateTime  @default(now())
+}
+
+// ============ SALES / CASHIER ACCOUNTABILITY ============
 
 model Sale {
   id            String     @id @default(uuid())
   facilityId    String
   facility      Facility   @relation(fields: [facilityId], references: [id])
+  // Cashier attribution
+  userId        String?
+  user          User?      @relation(fields: [userId], references: [id])
+  cashierName   String? // snapshot in case user removed
   receiptNumber Int        @default(autoincrement())
   totalAmount   Float
   cashPaid      Float
   momoPaid      Float
   paymentMethod String     @default("CASH") // CASH, MOMO, MIXED
-  momoNetwork   String?    // MTN, AIRTEL
+  momoNetwork   String? // MTN, AIRTEL
   createdAt     DateTime   @default(now())
   syncStatus    Boolean    @default(false)
   items         SaleItem[]
 }
 
 model SaleItem {
-  id         String @id @default(uuid())
-  saleId     String
-  sale       Sale   @relation(fields: [saleId], references: [id])
-  drugName   String
-  quantity   Int
-  unitPrice  Float
-  totalPrice Float
+  id          String  @id @default(uuid())
+  saleId      String
+  sale        Sale    @relation(fields: [saleId], references: [id])
+  inventoryId String? // which batch was sold (FEFO)
+  productId   String? // which product
+  drugName    String
+  unitType    String? // what unit it was sold in (Tablet/Strip/Box)
+  quantity    Int // number of units sold
+  unitPrice   Float // per-unit sell price (the SKU level)
+  totalPrice  Float
+  costPrice   Float // snapshot: what it cost at sale time (for profit)
 }
 
 model Expense {
   id          String   @id @default(uuid())
   facilityId  String
   facility    Facility @relation(fields: [facilityId], references: [id])
-  category    String   // YAKA, Transport, Allowance, Packaging, Water
+  category    String // YAKA, Transport, Allowance, Packaging, Water
   amount      Float
-  description  String?
+  description String?
   createdAt   DateTime @default(now())
   syncStatus  Boolean  @default(false)
 }
@@ -93,5 +196,5 @@ model DailyReconciliation {
   momoBalance      Float
   drugsBoughtTotal Float
   isClosed         Boolean  @default(false)
-  createdAt        DateTime  @default(now())
+  createdAt        DateTime @default(now())
 }

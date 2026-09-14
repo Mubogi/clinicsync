@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { TrendingUp, TrendingDown, Users, Building2, Smartphone } from "lucide-react";
 import { apiFetch } from "../lib/api.js";
-import { fmtMoney, fmtDate, TIERS } from "../lib/utils.js";
+import { fmtMoney, fmtShortMoney, fmtDate, TIERS } from "../lib/utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 function MiniBarChart({ data }) {
@@ -30,6 +30,7 @@ export default function Reports() {
   const [range, setRange] = useState(30);
   const [data, setData] = useState(null);
   const [users, setUsers] = useState([]);
+  const [plan, setPlan] = useState(null);
 
   const isOwner = session?.user?.role === "OWNER";
 
@@ -37,7 +38,8 @@ export default function Reports() {
     try {
       const [d, u] = await Promise.all([apiFetch(`/dashboard?days=${range}`), apiFetch("/auth/users")]);
       setData(d);
-      setUsers(u);
+      setUsers(Array.isArray(u) ? u : (u?.users || []));
+      setPlan(Array.isArray(u) ? null : (u?.plan || null));
     } catch {
       /* offline */
     }
@@ -143,6 +145,40 @@ export default function Reports() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* Cashier accountability */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Users size={16} className="text-emerald-600" />
+              <h2 className="font-semibold text-slate-900">Cashier accountability</h2>
+            </div>
+            {data.cashiers?.length ? (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-[11px] uppercase tracking-wide text-slate-400 border-b border-slate-100">
+                    <th className="py-2">Cashier</th>
+                    <th className="py-2 text-right">Sales</th>
+                    <th className="py-2 text-right">Cash</th>
+                    <th className="py-2 text-right">MoMo</th>
+                    <th className="py-2 text-right">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {data.cashiers.map((c) => (
+                    <tr key={c.name}>
+                      <td className="py-2 font-medium text-slate-700">{c.name}</td>
+                      <td className="py-2 text-right text-slate-500">{c.sales}</td>
+                      <td className="py-2 text-right font-mono text-slate-600">{fmtShortMoney(c.cash)}</td>
+                      <td className="py-2 text-right font-mono text-slate-600">{fmtShortMoney(c.momo)}</td>
+                      <td className="py-2 text-right font-mono font-bold text-slate-900">{fmtShortMoney(c.revenue)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="text-xs text-slate-400 py-4 text-center">No cashier sales yet.</div>
+            )}
           </div>
         </>
       )}

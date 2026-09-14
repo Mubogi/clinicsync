@@ -1,45 +1,96 @@
 import { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { getSession, setSession, apiFetch, login as apiLogin, logout as apiLogout } from "../lib/api.js";
+import {
+  getSession,
+  setSession,
+  apiFetch,
+  login as apiLogin,
+  logout as apiLogout,
+  applyLoginResponse,
+  tryRememberLogin,
+} from "../lib/api.js";
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [session, setSessionState] = useState(getSession());
-  const [ready, setReady] = useState(true);
+  const [ready, setReady] = useState(getSession() ? true : false);
 
   useEffect(() => {
-    if (!session) return;
-    // Validate stored session against server (best-effort)
-    apiFetch("/auth/me")
-      .then((d) => {
-        setSessionState({
-          user: d.user,
-          facility: d.facility,
-        });
-        setSession({
-          user: d.user,
-          facility: d.facility,
-        });
-      })
-      .catch(() => {
-        // offline or invalid — keep cached session for offline-first usage
-      })
-      .finally(() => setReady(true));
-  }, [session?.user?.id]);
+    let cancelled = false;
 
-  const login = useCallback(async (facilityName, pinCode) => {
-    const data = await apiLogin(facilityName, pinCode);
-    setSessionState(data);
+    const hydrate = async () => {
+      let current = getSession();
+      // If we have a session token, validate against server
+      if (current && current.user) {
+        try {
+          const d = await apiFetch("/auth/me");
+          if (cancelled) return;
+          current = {
+            user: d.user,
+            facility: d.facility,
+          };
+          setSession(current);
+        } catch {
+          // offline or expired — try remember-me, else fall back to cached
+          const d = await tryRememberLogin().catch(() => null);
+          if (cancelled) return;
+          if (d) {
+            current = {
+              user: d.user,
+              facility: d.facility,
+            };
+            setSession(current);
+          }
+        }
+      } else {
+        // no cached session — attempt persistent remember-me auto-login
+        const d = await tryRememberLogin().catch(() => null);
+        if (cancelled) return;
+        if (d) {
+          current = { user: d.user, facility: d.facility };
+          setSession(current);
+        } else {
+          current = null;
+        }
+      }
+      if (!cancelled) {
+        setReady(true);
+      }
+    };
+
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const login = useCallback(async (facilityName, pinCode, remember = true) => {
+    const data = await apiLogin(facilityName, pinCode, remember);
+    setSessionState({
+      user: data.user,
+      facility: data.facility,
+    });
     return data;
   }, []);
 
-  const logout = useCallback(() => {
-    apiLogout();
+  // `hard` = revoke remember-me and clear device (deliberate, hard logout)
+  const logout = useCallback(async ({ hard = false } = {}) => {
+    await apiLogout({ hard });
     setSessionState(null);
   }, []);
 
+  const refreshSession = useCallback((data) => {
+    applyLoginResponse(data);
+    setSessionState({
+      user: data.user,
+      facility: data.facility,
+    });
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ session, setSession: setSessionState, login, logout, ready }}>
+    <AuthContext.Provider
+      value={{ session, setSession: setSessionState, login, logout, refreshSession, ready }}
+    >
       {children}
     </AuthContext.Provider>
   );

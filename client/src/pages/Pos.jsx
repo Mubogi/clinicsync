@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Trash2, Plus, Minus, Printer, CheckCircle2, Zap, Banknote, Smartphone } from "lucide-react";
-import { apiFetch, setToken, setSession } from "../lib/api.js";
+import { apiFetch } from "../lib/api.js";
 import { salesDb, inventoryDb } from "../lib/db.js";
 import { runSync } from "../lib/sync.js";
 import { saveDoc } from "../lib/db.js";
-import { fmtMoney, fmtDate, fmtTime, todayKey } from "../lib/utils.js";
+import { fmtMoney, fmtDate, fmtTime, unitLabel, productUnits } from "../lib/utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 const QUICK_ADDS = ["Paracetamol 500mg", "Amoxicillin 250mg", "Metronidazole 400mg"];
@@ -12,6 +12,7 @@ const QUICK_ADDS = ["Paracetamol 500mg", "Amoxicillin 250mg", "Metronidazole 400
 export default function Pos() {
   const { session } = useAuth();
   const [inventory, setInventory] = useState([]);
+  const [products, setProducts] = useState([]);
   const [cart, setCart] = useState([]);
   const [query, setQuery] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("CASH");
@@ -23,8 +24,9 @@ export default function Pos() {
 
   async function loadInventory() {
     try {
-      const cloud = await apiFetch("/inventory");
+      const [cloud, prods] = await Promise.all([apiFetch("/inventory"), apiFetch("/products")]);
       setInventory(cloud);
+      setProducts(prods);
     } catch {
       // offline: fall back to local pouchdb inventory
       const res = await inventoryDb.allDocs({ include_docs: true });
@@ -36,11 +38,6 @@ export default function Pos() {
     loadInventory();
   }, []);
 
-  const isTierLocked = (item) => {
-    // Reorder/FEFO features are Premium+; POS works on all tiers
-    return false;
-  };
-
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return inventory.slice(0, 30);
@@ -48,47 +45,94 @@ export default function Pos() {
       .filter(
         (i) =>
           i.drugName?.toLowerCase().includes(q) ||
-          i.unitType?.toLowerCase().includes(q)
+          i.unitType?.toLowerCase().includes(q) ||
+          (i.productId &&
+            products.find((p) => p.id === i.productId)?.name?.toLowerCase().includes(q))
       )
       .slice(0, 30);
-  }, [inventory, query]);
+  }, [inventory, products, query]);
 
   const quickAdds = useMemo(
     () => inventory.filter((i) => QUICK_ADDS.includes(i.drugName)).slice(0, 3),
     [inventory]
   );
 
-  function addToCart(item, qty = 1) {
-    if (item.quantity <= 0) {
-      setNotice(`"${item.drugName}" is out of stock`);
+  // Build a list of sellable SKUs for a given product:
+  // - if the product has no linked inventory batches, fall back to per-unit catalog prices
+  // - each SKU points at a specific inventory batch (for stock decrement)
+  // Cost per unit is scaled from the batch cost to the actual unit (mirrors server logic).
+  function skuCost(batch, unitKey) {
+    const base = batch?.costPrice || 0;
+    const prod = products.find((p) => p.id === batch?.productId);
+    if (!prod) return base;
+    const sp = prod.stripPrice || 0;
+    const tp = prod.tabletPrice || 0;
+    const bp = prod.boxPrice || 0;
+    if (unitKey === "Tablet" && sp > 0 && tp > 0) return base * (tp / sp);
+    if (unitKey === "Box" && sp > 0 && bp > 0) return base * (bp / sp);
+    return base;
+  }
+
+  function skusForProduct(batch) {
+    const prod = products.find((p) => p.id === batch?.productId);
+    const units = productUnits(prod || {});
+    // If product has no per-unit prices, just sell the batch itself
+    if (units.length === 0) {
+      return [{ batch, label: batch?.unitType, price: batch?.sellingPrice, cost: batch?.costPrice || 0, key: batch?.id + "-def", qty: 1 }];
+    }
+    return units
+      .filter((u) => u.price != null && u.price > 0)
+      .map((u) => ({
+        batch,
+        label: unitLabel(u.key),
+        price: u.price,
+        cost: skuCost(batch, u.key),
+        key: batch.id + "-" + u.key,
+        qty: 1,
+        unitKey: u.key,
+      }));
+  }
+
+  function addToCart(batch, sku) {
+    if (!batch || batch.quantity <= 0) {
+      setNotice(`"${batch.drugName}" is out of stock`);
       setTimeout(() => setNotice(""), 2500);
       return;
     }
+    const qty = sku.qty || 1;
     setCart((prev) => {
-      const existing = prev.find((c) => c.inventoryId === item.id);
+      const existing = prev.find((c) => c.cartKey === sku.key);
       if (existing) {
-        if (existing.qty + qty > item.quantity) {
-          setNotice(`Only ${item.quantity} left for ${item.drugName}`);
+        if (existing.qty + qty > batch.quantity) {
+          setNotice(`Only ${batch.quantity} left of ${batch.drugName} (${sku.label})`);
           setTimeout(() => setNotice(""), 2500);
           return prev;
         }
-        return prev.map((c) =>
-          c.inventoryId === item.id ? { ...c, qty: c.qty + qty } : c
-        );
+        return prev.map((c) => (c.cartKey === sku.key ? { ...c, qty: c.qty + qty } : c));
       }
       return [
         ...prev,
-        { inventoryId: item.id, drugName: item.drugName, unitType: item.unitType, price: item.sellingPrice, qty },
+        {
+          cartKey: sku.key,
+          inventoryId: batch.id,
+          productId: batch.productId || null,
+          drugName: batch.drugName,
+          unitLabel: sku.label,
+          unitKey: sku.unitKey || batch.unitType,
+          price: sku.price,
+          costPrice: sku.cost || 0,
+          qty,
+        },
       ];
     });
   }
 
-  function updateQty(inventoryId, delta) {
+  function updateQty(cartKey, delta) {
     setCart((prev) =>
       prev
         .map((c) => {
-          if (c.inventoryId !== inventoryId) return c;
-          const inv = inventory.find((i) => i.id === inventoryId);
+          if (c.cartKey !== cartKey) return c;
+          const inv = inventory.find((i) => i.id === c.inventoryId);
           const max = inv ? inv.quantity : 999;
           return { ...c, qty: Math.max(1, Math.min(max, c.qty + delta)) };
         })
@@ -96,11 +140,12 @@ export default function Pos() {
     );
   }
 
-  function removeFromCart(inventoryId) {
-    setCart((prev) => prev.filter((c) => c.inventoryId !== inventoryId));
+  function removeFromCart(cartKey) {
+    setCart((prev) => prev.filter((c) => c.cartKey !== cartKey));
   }
 
   const total = cart.reduce((s, c) => s + c.price * c.qty, 0);
+  const expectedProfit = cart.reduce((s, c) => s + (c.price - c.costPrice) * c.qty, 0);
 
   async function checkout() {
     if (cart.length === 0 || !total) return;
@@ -110,6 +155,8 @@ export default function Pos() {
     const payload = {
       items: cart.map((c) => ({
         inventoryId: c.inventoryId,
+        productId: c.productId,
+        unitType: c.unitKey,
         quantity: c.qty,
       })),
       cashPaid: paymentMethod === "MOMO" ? 0 : total,
@@ -128,7 +175,6 @@ export default function Pos() {
       setQuery("");
       loadInventory();
 
-      // Persist to offline store too
       await saveDoc(salesDb, {
         _id: sale.id,
         receiptNumber: sale.receiptNumber,
@@ -137,14 +183,15 @@ export default function Pos() {
         momoPaid: sale.momoPaid,
         paymentMethod: sale.paymentMethod,
         momoNetwork: sale.momoNetwork,
+        userId: session?.user?.id,
+        cashierName: session?.user?.name,
         items: sale.items,
         createdAt: sale.createdAt,
       });
 
-      // Try background sync
       runSync().catch(() => {});
     } catch (err) {
-      // Offline: create sale locally with a temp id, adjust local inventory
+      // Offline: create sale locally with a temp id
       const localId = crypto.randomUUID();
       const nextReceipt = (parseInt(localStorage.getItem("clinicsync_last_receipt") || "0", 10) || 0) + 1;
       localStorage.setItem("clinicsync_last_receipt", String(nextReceipt));
@@ -160,17 +207,21 @@ export default function Pos() {
         items: cart.map((c) => ({
           id: crypto.randomUUID(),
           inventoryId: c.inventoryId,
+          productId: c.productId,
+          unitType: c.unitKey,
           drugName: c.drugName,
           quantity: c.qty,
           unitPrice: c.price,
           totalPrice: c.price * c.qty,
+          costPrice: c.costPrice,
         })),
         createdAt: now,
         synced: false,
+        userId: session?.user?.id,
+        cashierName: session?.user?.name,
       };
       await saveDoc(salesDb, localSale);
 
-      // decrement local inventory
       for (const c of cart) {
         try {
           const inv = await inventoryDb.get(c.inventoryId);
@@ -194,9 +245,6 @@ export default function Pos() {
 
   function printReceipt() {
     if (!receipt) return;
-    const printContent = printRef.current;
-    const original = document.body.innerHTML;
-    // Use window.print with a focused print-area approach
     window.print();
   }
 
@@ -205,7 +253,7 @@ export default function Pos() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Point of Sale</h1>
-          <p className="text-sm text-slate-500">Fast cash receipts · works offline</p>
+          <p className="text-sm text-slate-500">Fast cash receipts · works offline · cashier: <span className="font-semibold text-slate-700">{session?.user?.name}</span></p>
         </div>
         <div className="text-sm bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-600">
           Shift date: <span className="font-semibold text-slate-900">{fmtDate(new Date())}</span>
@@ -235,15 +283,18 @@ export default function Pos() {
                 <span className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-slate-400 font-medium">
                   <Zap size={12} /> Quick add
                 </span>
-                {quickAdds.map((q) => (
-                  <button
-                    key={q.id}
-                    onClick={() => addToCart(q)}
-                    className="flex items-center gap-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-medium px-2.5 py-1.5 rounded-full border border-emerald-200"
-                  >
-                    + {q.drugName.split(" ")[0]}
-                  </button>
-                ))}
+                {quickAdds.map((q) => {
+                  const s = skusForProduct(q)[0];
+                  return (
+                    <button
+                      key={q.id}
+                      onClick={() => addToCart(q, s)}
+                      className="flex items-center gap-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-medium px-2.5 py-1.5 rounded-full border border-emerald-200"
+                    >
+                      + {q.drugName.split(" ")[0]}
+                    </button>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -254,33 +305,42 @@ export default function Pos() {
                 No products match “{query}”. Add stock in Inventory first.
               </div>
             )}
-            {matches.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => addToCart(item)}
-                disabled={item.quantity <= 0}
-                className="text-left bg-white rounded-xl border border-slate-200 p-4 hover:border-emerald-300 hover:shadow-md transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-semibold text-slate-900 text-sm">{item.drugName}</div>
-                    <div className="text-xs text-slate-500 mt-0.5">{item.unitType}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-emerald-600 font-bold text-sm">{fmtMoney(item.sellingPrice)}</div>
-                    <div
-                      className={`text-[11px] mt-0.5 ${
-                        item.quantity <= item.reorderLevel
-                          ? "text-amber-600 font-medium"
-                          : "text-slate-400"
-                      }`}
-                    >
-                      {item.quantity} in stock
+            {matches.map((item) => {
+              const skus = skusForProduct(item);
+              const low = item.quantity <= item.reorderLevel;
+              return (
+                <div
+                  key={item.id}
+                  className="bg-white rounded-xl border border-slate-200 p-4 hover:border-emerald-300 hover:shadow-md transition-all"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div>
+                      <div className="font-semibold text-slate-900 text-sm">{item.drugName}</div>
+                      <div className="text-xs text-slate-500 mt-0.5">{item.unitType}</div>
+                    </div>
+                    <div className="text-right">
+                      <div
+                        className={`text-[11px] mt-0.5 font-medium ${low ? "text-amber-600" : "text-slate-400"}`}
+                      >
+                        {item.quantity} in stock {low && "— low"}
+                      </div>
                     </div>
                   </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {skus.map((s) => (
+                      <button
+                        key={s.key}
+                        onClick={() => addToCart(item, s)}
+                        disabled={item.quantity <= 0}
+                        className="flex items-center gap-1 bg-slate-50 hover:bg-emerald-50 hover:text-emerald-700 border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold text-slate-700 disabled:opacity-40 transition-colors"
+                      >
+                        <Plus size={11} /> {s.label} · {fmtMoney(s.price)}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -296,22 +356,22 @@ export default function Pos() {
               <div className="text-sm text-slate-400 py-8 text-center">Cart is empty.<br />Tap a product to add it.</div>
             ) : (
               cart.map((c) => (
-                <div key={c.inventoryId} className="flex items-center gap-2 py-2 border-b border-slate-50">
+                <div key={c.cartKey} className="flex items-center gap-2 py-2 border-b border-slate-50">
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-slate-800 truncate">{c.drugName}</div>
+                    <div className="text-sm font-medium text-slate-800 truncate">{c.drugName} <span className="text-[10px] font-normal text-slate-400">({c.unitLabel})</span></div>
                     <div className="text-[11px] text-slate-400">
                       {fmtMoney(c.price)} × {c.qty} = <span className="font-mono text-slate-500">{fmtMoney(c.price * c.qty)}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-1">
-                    <button onClick={() => updateQty(c.inventoryId, -1)} className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600">
+                    <button onClick={() => updateQty(c.cartKey, -1)} className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600">
                       <Minus size={12} />
                     </button>
                     <span className="w-7 text-center text-sm font-mono">{c.qty}</span>
-                    <button onClick={() => updateQty(c.inventoryId, 1)} className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600">
+                    <button onClick={() => updateQty(c.cartKey, 1)} className="w-6 h-6 rounded bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-600">
                       <Plus size={12} />
                     </button>
-                    <button onClick={() => removeFromCart(c.inventoryId)} className="w-6 h-6 rounded hover:bg-red-50 flex items-center justify-center text-slate-400 hover:text-red-600">
+                    <button onClick={() => removeFromCart(c.cartKey)} className="w-6 h-6 rounded hover:bg-red-50 flex items-center justify-center text-slate-400 hover:text-red-600">
                       <Trash2 size={13} />
                     </button>
                   </div>
@@ -321,10 +381,16 @@ export default function Pos() {
           </div>
 
           <div className="px-4 py-3 border-t border-slate-100">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-1">
               <span className="text-sm text-slate-500">Total</span>
               <span className="text-2xl font-bold text-slate-900">{fmtMoney(total)}</span>
             </div>
+            {cart.length > 0 && (
+              <div className="flex items-center justify-between mb-2 text-[11px]">
+                <span className="text-slate-400">Expected profit (this sale)</span>
+                <span className="font-semibold text-emerald-600">{fmtMoney(expectedProfit)}</span>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 gap-2 mb-3">
               <button
@@ -384,9 +450,10 @@ export default function Pos() {
           <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full">
             <div ref={printRef} className="print-area p-5">
               <div className="text-center border-b border-dashed border-slate-300 pb-3">
-                <div className="text-lg font-bold text-slate-900">{session?.facility?.name}</div>
+                <div className="text-lg font-bold text-slate-900">{session?.facility?.brandName || session?.facility?.name}</div>
                 <div className="text-xs text-slate-500">Jordan Design Hub · Uganda</div>
                 <div className="text-xs text-slate-500 mt-1">Receipt #{receipt.receiptNumber}</div>
+                <div className="text-[11px] text-slate-500 mt-0.5">Cashier: {receipt.cashierName || session?.user?.name || "—"}</div>
               </div>
               <div className="flex items-center justify-between text-xs text-slate-600 py-2 border-b border-dashed border-slate-200">
                 <span>{fmtDate(receipt.createdAt)} {fmtTime(receipt.createdAt)}</span>
@@ -396,7 +463,7 @@ export default function Pos() {
                 {(receipt.items || []).map((it, i) => (
                   <div key={i} className="flex items-start justify-between text-sm py-1">
                     <div className="flex-1 pr-2">
-                      <div className="text-slate-800">{it.drugName}</div>
+                      <div className="text-slate-800">{it.drugName} {it.unitType ? <span className="text-[10px] text-slate-400">({unitLabel(it.unitType)})</span> : null}</div>
                       <div className="text-[11px] text-slate-400">{it.quantity} × {fmtMoney(it.unitPrice)}</div>
                     </div>
                     <div className="font-mono text-slate-700">{fmtMoney(it.totalPrice)}</div>

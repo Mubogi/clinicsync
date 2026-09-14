@@ -4,7 +4,24 @@ import { prisma } from "../db.js";
 
 const router = Router();
 
-// Create a sale, decrement inventory, generate receipt number
+// FEFO helper: pick the earliest-expiring batch of the given product/unit with stock
+async function pickBatch(tx, facilityId, productId, unitType, qty) {
+  const batches = await tx.inventory.findMany({
+    where: {
+      facilityId,
+      productId,
+      unitType,
+      quantity: { gt: 0 },
+    },
+    orderBy: [{ expiryDate: "asc" }, { createdAt: "asc" }],
+  });
+  for (const b of batches) {
+    if (b.quantity >= qty) return b;
+  }
+  return null;
+}
+
+// Create a sale, decrement inventory (FEFO), track cashier attribution + stock movements
 router.post("/", async (req, res) => {
   const { items, cashPaid, momoPaid, paymentMethod, momoNetwork } = req.body;
 
@@ -38,20 +55,66 @@ router.post("/", async (req, res) => {
       if (inv.quantity < it.quantity) {
         throw new Error(`Insufficient stock for ${inv.drugName} (have ${inv.quantity})`);
       }
-      const unitPrice = inv.sellingPrice;
+
+      // Honor per-unit catalog pricing: if the POS passed a productId + unitType,
+      // use the product's price for that unit (Tablet/Strip of 10/Box) instead of
+      // the batch's sellingPrice. Falls back to batch price for older clients.
+      let product = null;
+      let unitPrice = inv.sellingPrice;
+      if (it.productId) {
+        product = await tx.product.findUnique({ where: { id: it.productId } });
+        if (product) {
+          const byUnit = {
+            Tablet: product.tabletPrice,
+            "Strip of 10": product.stripPrice,
+            "Strip of 6": product.stripPrice,
+            Box: product.boxPrice,
+          }[it.unitType];
+          if (byUnit != null && byUnit > 0) unitPrice = byUnit;
+        }
+      }
       const totalPrice = unitPrice * it.quantity;
       totalAmount += totalPrice;
+
+      // Per-unit cost snapshot, scaled from the batch cost to the actual unit sold.
+      // Ratio-based: a tablet costs ~ (tabletPrice/stripPrice) of a strip, a box
+      // costs ~ (boxPrice/stripPrice) of a strip.
+      let costNow = inv.costPrice || 0;
+      if (product) {
+        const sp = product.stripPrice || 0;
+        const tp = product.tabletPrice || 0;
+        const bp = product.boxPrice || 0;
+        if (it.unitType === "Tablet" && sp > 0 && tp > 0) {
+          costNow = costNow * (tp / sp);
+        } else if (it.unitType === "Box" && sp > 0 && bp > 0) {
+          costNow = costNow * (bp / sp);
+        }
+      }
 
       await tx.inventory.update({
         where: { id: inv.id },
         data: { quantity: { decrement: it.quantity }, syncStatus: false },
       });
 
+      await tx.stockMovement.create({
+        data: {
+          facilityId: req.user.facilityId,
+          inventoryId: inv.id,
+          delta: -it.quantity,
+          reason: "SALE",
+          userId: req.user.sub || null,
+        },
+      });
+
       saleItems.push({
+        inventoryId: inv.id,
+        productId: inv.productId || undefined,
         drugName: inv.drugName,
+        unitType: it.unitType || inv.unitType,
         quantity: it.quantity,
         unitPrice,
         totalPrice,
+        costPrice: costNow,
       });
     }
 
@@ -61,6 +124,8 @@ router.post("/", async (req, res) => {
     const sale = await tx.sale.create({
       data: {
         facilityId: req.user.facilityId,
+        userId: req.user.sub || null,
+        cashierName: req.user.name || null,
         receiptNumber,
         totalAmount,
         cashPaid: cash,

@@ -1,4 +1,5 @@
 const TOKEN_KEY = "clinicsync_token";
+const REMEMBER_KEY = "clinicsync_remember_token";
 
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -7,6 +8,16 @@ export function getToken() {
 export function setToken(token) {
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
+}
+
+// Persistent "remember me" token — lets the app auto-login across restarts
+export function getRememberToken() {
+  return localStorage.getItem(REMEMBER_KEY);
+}
+
+export function setRememberToken(token) {
+  if (token) localStorage.setItem(REMEMBER_KEY, token);
+  else localStorage.removeItem(REMEMBER_KEY);
 }
 
 export function getSession() {
@@ -45,20 +56,59 @@ export function apiFetch(path, options = {}) {
   });
 }
 
-export async function login(facilityName, pinCode) {
+export async function login(facilityName, pinCode, remember = true) {
   const data = await apiFetch("/auth/login", {
     method: "POST",
-    body: JSON.stringify({ facilityName, pinCode }),
+    body: JSON.stringify({ facilityName, pinCode, remember }),
   });
+  applyLoginResponse(data);
+  return data;
+}
+
+// Persist the tokens + session returned by the server (login or remember)
+export function applyLoginResponse(data) {
   setToken(data.token);
+  if (data.rememberToken) {
+    setRememberToken(data.rememberToken);
+  } else if (localStorage.getItem(REMEMBER_KEY)) {
+    // keep existing remember token (silent relogin flow doesn't re-mint)
+  }
   setSession({
     user: data.user,
     facility: data.facility,
   });
-  return data;
 }
 
-export function logout() {
+// Try to auto-login via the persistent remember-me token (no PIN needed)
+export async function tryRememberLogin() {
+  const rt = getRememberToken();
+  if (!rt) return null;
+  try {
+    const data = await apiFetch("/auth/remember", {
+      method: "POST",
+      body: JSON.stringify({ rememberToken: rt }),
+    });
+    applyLoginResponse(data);
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+// Hard logout: revoke the remember-me token server-side so the device is forgotten
+export async function logout({ hard = false } = {}) {
+  if (hard) {
+    try {
+      const rt = getRememberToken();
+      await apiFetch("/auth/logout", {
+        method: "POST",
+        body: JSON.stringify({ revokeRemember: true, rememberToken: rt }),
+      });
+    } catch {
+      // offline — clear locally regardless
+    }
+  }
   setToken(null);
   setSession(null);
+  setRememberToken(null);
 }

@@ -8,14 +8,16 @@ import {
   Cloud,
   AlertTriangle,
   ArrowRight,
+  Flame,
+  Users,
 } from "lucide-react";
 import { apiFetch } from "../lib/api.js";
 import { useAuth } from "../context/AuthContext.jsx";
-import { fmtMoney, fmtDate, TIERS } from "../lib/utils.js";
+import { fmtMoney, fmtDate, TIERS, roleMeta } from "../lib/utils.js";
 import { runSync } from "../lib/sync.js";
 
 export default function Dashboard() {
-  const { session, setSession } = useAuth();
+  const { session } = useAuth();
   const [stats, setStats] = useState(null);
   const [lowStock, setLowStock] = useState([]);
   const [syncing, setSyncing] = useState(false);
@@ -24,6 +26,7 @@ export default function Dashboard() {
   const role = session?.user?.role;
   const tier = session?.facility?.subscriptionTier || "BASIC";
   const isOwner = role === "OWNER";
+  const isPharmacist = role === "PHARMACIST";
 
   async function load() {
     try {
@@ -96,7 +99,7 @@ export default function Dashboard() {
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <Stat label="Revenue" value={fmtMoney(stats.totalRevenue)} sub="Last 30 days" />
               <Stat label="Sales" value={String(stats.totalSales)} sub="Transactions" />
-              <Stat label="Expenses" value={fmtMoney(stats.totalExpenses)} sub="Last 30 days" />
+              <Stat label="Expected profit" value={fmtMoney(stats.expectedProfit)} sub="Rev − cost of goods" />
               <Stat label="Net" value={fmtMoney(stats.netRevenue)} sub="After expenses" />
             </div>
           ) : (
@@ -161,18 +164,72 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {(isOwner || isPharmacist) && (
+        <div className="grid lg:grid-cols-2 gap-4">
+          {/* Cashier performance */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-semibold text-slate-900">Cashier performance</h2>
+              <Users size={18} className="text-slate-400" />
+            </div>
+            {stats?.cashiers?.length ? (
+              <ul className="divide-y divide-slate-100">
+                {stats.cashiers.map((c) => (
+                  <li key={c.name} className="flex items-center justify-between py-2">
+                    <div>
+                      <div className="text-sm font-medium text-slate-800">{c.name}</div>
+                      <div className="text-[11px] text-slate-400">{c.sales} sales</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-sm font-bold text-slate-900">{fmtMoney(c.revenue)}</div>
+                      <div className="text-[11px] text-slate-400">
+                        cash {fmtMoney(c.cash)} · momo {fmtMoney(c.momo)}
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="text-sm text-slate-400 py-6 text-center">No cashier sales recorded yet.</div>
+            )}
+          </div>
+
+          {/* Expiry alerts */}
+          <div className="bg-white rounded-xl border border-slate-200 p-5">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-semibold text-slate-900">Expiring soon (30 days)</h2>
+              <Flame size={18} className={stats?.expiringSoon?.length ? "text-orange-500" : "text-slate-200"} />
+            </div>
+            {stats?.expiringSoon?.length ? (
+              <ul className="space-y-2">
+                {stats.expiringSoon.slice(0, 6).map((item) => (
+                  <li key={item.id} className="flex items-center justify-between bg-orange-50 border border-orange-200 rounded-lg px-3 py-2">
+                    <span className="text-sm text-slate-700">{item.drugName}</span>
+                    <span className="text-xs font-mono text-orange-700">
+                      {item.quantity} left · {fmtDate(item.expiryDate)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <div className="text-sm text-slate-400 py-6 text-center">Nothing expiring soon 🎉</div>
+            )}
+          </div>
+        </div>
+      )}
+
       {isOwner && (
         <div className="bg-slate-900 rounded-xl p-5 text-white">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-semibold">Owner Portal</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Multi-branch analytics, users & subscriptions (Pro tier)</p>
+              <p className="text-xs text-slate-400 mt-0.5">{stats?.tier?.usersUsed}/{stats?.tier?.maxUsers} team members on the {stats?.tier?.label} plan</p>
             </div>
             <Link
-              to="/reports"
+              to="/settings"
               className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2 rounded-lg"
             >
-              View reports <ArrowRight size={14} />
+              Manage team & plan <ArrowRight size={14} />
             </Link>
           </div>
         </div>

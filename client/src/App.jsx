@@ -8,6 +8,7 @@ import Inventory from "./pages/Inventory.jsx";
 import Expenses from "./pages/Expenses.jsx";
 import Reconciliation from "./pages/Reconciliation.jsx";
 import Reports from "./pages/Reports.jsx";
+import Settings from "./pages/Settings.jsx";
 import Layout from "./components/Layout.jsx";
 
 function Protected({ children }) {
@@ -67,6 +68,14 @@ export default function App() {
         element={
           <Protected>
             <Reports />
+          </Protected>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <Protected>
+            <Settings />
           </Protected>
         }
       />

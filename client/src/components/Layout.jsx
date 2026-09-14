@@ -6,16 +6,15 @@ import {
   Package,
   Wallet,
   ClipboardList,
-  Cloud,
   LogOut,
   Menu,
   X,
   Building2,
-  Users,
   BarChart3,
+  Settings as SettingsIcon,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
-import { initials, TIERS, cx } from "../lib/utils.js";
+import { initials, TIERS, roleMeta, cx } from "../lib/utils.js";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -33,23 +32,36 @@ export default function Layout({ children }) {
 
   const role = session?.user?.role;
   const tier = session?.facility?.subscriptionTier || "BASIC";
-  const allowUsers = session.user && session.user.id === "demo-user-owner";
-  const allowReports = role === "OWNER" || role === "PHARMACIST";
+  const isOwner = role === "OWNER";
+  const isPharmacist = role === "PHARMACIST";
+  const allowReports = isOwner || isPharmacist;
+  const brandName = session?.facility?.brandName || session?.facility?.name || "ClinicSync";
+  const logoEmoji = session?.facility?.logoEmoji;
 
   const navItems = NAV.filter((n) => {
     if (n.to === "/reports" && !allowReports) return false;
     return true;
   });
+  if (isOwner) {
+    navItems.push({ to: "/settings", label: "Settings", icon: SettingsIcon });
+  }
+
+  const handleLogout = async (hard) => {
+    await logout({ hard });
+    navigate("/login");
+  };
 
   const SidebarContent = (
     <div className="flex flex-col h-full bg-slate-900 text-white w-64">
       <div className="flex items-center gap-3 px-5 py-5 border-b border-white/10">
         <div className="w-10 h-10 rounded-xl bg-emerald-600 flex items-center justify-center font-bold text-lg">
-          CS
+          {logoEmoji || "CS"}
         </div>
-        <div>
-          <div className="font-bold text-white leading-tight">ClinicSync</div>
-          <div className="text-[11px] text-slate-400">Offline-first · JD Hub</div>
+        <div className="min-w-0">
+          <div className="font-bold text-white leading-tight truncate">{brandName}</div>
+          <div className="text-[11px] text-slate-400 flex items-center gap-1">
+            <Building2 size={11} /> {session?.facility?.name}
+          </div>
         </div>
       </div>
 
@@ -79,16 +91,16 @@ export default function Layout({ children }) {
           </div>
           <div className="min-w-0">
             <div className="text-sm font-semibold truncate">{session?.user?.name}</div>
-            <div className="text-[11px] text-slate-400">
-              {role} · <span style={{ color: TIERS[tier]?.color }}>{TIERS[tier]?.label}</span>
+            <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
+              <span style={{ color: roleMeta(role)?.color }}>{roleMeta(role)?.label}</span>
+              <span>·</span>
+              <span style={{ color: TIERS[tier]?.color || "#94a3b8" }}>{TIERS[tier]?.label || tier}</span>
             </div>
           </div>
         </div>
         <button
-          onClick={() => {
-            logout();
-            navigate("/login");
-          }}
+          onClick={() => handleLogout(false)}
+          title="Sign out from this device (keeps your saved session)"
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm bg-white/5 text-slate-300 hover:bg-white/10"
         >
           <LogOut size={16} /> Log out
@@ -124,14 +136,25 @@ export default function Layout({ children }) {
           <button onClick={() => setMobileOpen(true)} className="p-2 -ml-2 text-slate-700">
             <Menu size={22} />
           </button>
-          <div className="flex items-center gap-2 font-bold text-slate-900">
-            <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xs">CS</div>
-            ClinicSync
+          <div className="flex items-center gap-2 font-bold text-slate-900 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-emerald-600 text-white flex items-center justify-center text-xs shrink-0">{logoEmoji || "CS"}</div>
+            <span className="truncate">{brandName}</span>
           </div>
           <div className="w-9 h-9 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center text-xs font-bold">
             {initials(session?.user?.name)}
           </div>
         </header>
+
+        {/* Facility banner (visible on all pages for context) */}
+        <div className="bg-emerald-700 text-white text-xs px-4 md:px-6 py-1.5 flex items-center justify-between">
+          <span>{brandName}</span>
+          <span className="flex items-center gap-1">
+            <span style={{ color: roleMeta(role)?.color }} className="font-semibold text-white bg-white/10 px-1.5 py-0.5 rounded">
+              {roleMeta(role)?.label}
+            </span>
+            <span className="text-white/80">{session?.user?.name}</span>
+          </span>
+        </div>
 
         <main className="flex-1 pb-20 md:pb-8 px-4 md:px-6 py-5 max-w-7xl w-full mx-auto">
           {children}

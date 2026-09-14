@@ -25,6 +25,8 @@ router.post("/push", async (req, res) => {
         data: {
           id: s.id,
           facilityId,
+          userId: s.userId || null,
+          cashierName: s.cashierName || null,
           receiptNumber: Number(s.receiptNumber) || 0,
           totalAmount: Number(s.totalAmount) || 0,
           cashPaid: Number(s.cashPaid) || 0,
@@ -35,10 +37,14 @@ router.post("/push", async (req, res) => {
           syncStatus: true,
           items: {
             create: (s.items || []).map((it) => ({
+              inventoryId: it.inventoryId || undefined,
+              productId: it.productId || undefined,
               drugName: it.drugName,
+              unitType: it.unitType || null,
               quantity: Number(it.quantity) || 0,
               unitPrice: Number(it.unitPrice) || 0,
               totalPrice: Number(it.totalPrice) || 0,
+              costPrice: Number(it.costPrice) || 0,
             })),
           },
         },
@@ -80,6 +86,7 @@ router.post("/push", async (req, res) => {
         data: {
           id: it.id,
           facilityId,
+          productId: it.productId || undefined,
           drugName: it.drugName,
           unitType: it.unitType || "Strip",
           quantity: Number(it.quantity) || 0,
@@ -87,6 +94,8 @@ router.post("/push", async (req, res) => {
           sellingPrice: Number(it.sellingPrice) || 0,
           expiryDate: it.expiryDate ? new Date(it.expiryDate) : null,
           reorderLevel: Number(it.reorderLevel) || 10,
+          supplier: it.supplier || null,
+          batch: it.batch || null,
           createdAt: it.createdAt ? new Date(it.createdAt) : new Date(),
           syncStatus: true,
         },

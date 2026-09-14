@@ -15,6 +15,8 @@ import expenseRoutes from "./routes/expenses.js";
 import reconciliationRoutes from "./routes/reconciliation.js";
 import syncRoutes from "./routes/sync.js";
 import dashboardRoutes from "./routes/dashboard.js";
+import productRoutes from "./routes/products.js";
+import adminRoutes from "./routes/admin.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -28,11 +30,13 @@ app.get("/api/health", (_req, res) => {
 
 app.use("/api/auth", authRoutes);
 app.use("/api/inventory", requireAuth, inventoryRoutes);
+app.use("/api/products", requireAuth, productRoutes);
 app.use("/api/sales", requireAuth, saleRoutes);
 app.use("/api/expenses", requireAuth, expenseRoutes);
 app.use("/api/reconciliation", requireAuth, reconciliationRoutes);
 app.use("/api/sync", requireAuth, syncRoutes);
 app.use("/api/dashboard", requireAuth, dashboardRoutes);
+app.use("/api/admin", requireAuth, adminRoutes);
 
 // Serve built client in production
 const clientDist = path.join(__dirname, "..", "..", "client", "dist");
