@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: clinicsync-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clinicsync
+      POSTGRES_PASSWORD: clinicsync
+      POSTGRES_DB: clinicsync
+    ports:
+      - "5432:5432"
+    volumes:
+      - clinicsync_pgdata:/var/lib/postgresql/data
+
+volumes:
+  clinicsync_pgdata:

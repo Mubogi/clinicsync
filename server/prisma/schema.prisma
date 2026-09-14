@@ -1,0 +1,97 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Facility {
+  id               String               @id @default(uuid())
+  name             String
+  subscriptionTier String               @default("BASIC") // BASIC, PREMIUM, PRO
+  users            User[]
+  inventories      Inventory[]
+  sales            Sale[]
+  expenses         Expense[]
+  reconciliations  DailyReconciliation[]
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+}
+
+model User {
+  id          String   @id @default(uuid())
+  facilityId  String
+  facility    Facility @relation(fields: [facilityId], references: [id])
+  name        String
+  role        String   // OWNER, PHARMACIST, CASHIER
+  pinCode     String
+  createdAt   DateTime @default(now())
+}
+
+model Inventory {
+  id           String    @id @default(uuid())
+  facilityId   String
+  facility     Facility  @relation(fields: [facilityId], references: [id])
+  drugName     String
+  unitType     String    // Tablet, Strip, Bottle, Box
+  quantity     Int
+  costPrice    Float
+  sellingPrice Float
+  expiryDate   DateTime?
+  reorderLevel Int       @default(10)
+  syncStatus   Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Sale {
+  id            String     @id @default(uuid())
+  facilityId    String
+  facility      Facility   @relation(fields: [facilityId], references: [id])
+  receiptNumber Int        @default(autoincrement())
+  totalAmount   Float
+  cashPaid      Float
+  momoPaid      Float
+  paymentMethod String     @default("CASH") // CASH, MOMO, MIXED
+  momoNetwork   String?    // MTN, AIRTEL
+  createdAt     DateTime   @default(now())
+  syncStatus    Boolean    @default(false)
+  items         SaleItem[]
+}
+
+model SaleItem {
+  id         String @id @default(uuid())
+  saleId     String
+  sale       Sale   @relation(fields: [saleId], references: [id])
+  drugName   String
+  quantity   Int
+  unitPrice  Float
+  totalPrice Float
+}
+
+model Expense {
+  id          String   @id @default(uuid())
+  facilityId  String
+  facility    Facility @relation(fields: [facilityId], references: [id])
+  category    String   // YAKA, Transport, Allowance, Packaging, Water
+  amount      Float
+  description  String?
+  createdAt   DateTime @default(now())
+  syncStatus  Boolean  @default(false)
+}
+
+model DailyReconciliation {
+  id               String   @id @default(uuid())
+  facilityId       String
+  facility         Facility @relation(fields: [facilityId], references: [id])
+  date             DateTime @default(now())
+  totalRevenue     Float
+  totalExpenses    Float
+  expectedCash     Float
+  momoBalance      Float
+  drugsBoughtTotal Float
+  isClosed         Boolean  @default(false)
+  createdAt        DateTime  @default(now())
+}

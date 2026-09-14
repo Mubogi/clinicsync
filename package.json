@@ -1,0 +1,20 @@
+{
+  "name": "clinicsync",
+  "version": "1.0.0",
+  "description": "ClinicSync — offline-first hospital, clinic & pharmacy management system (POS, expenses, EOD reconciliation, tiered SaaS",
+  "private": true,
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "install:all": "npm install --workspaces",
+    "dev": "concurrently -n server,client -c green,cyan \"npm run dev -w server\" \"npm run dev -w client\"",
+    "build": "npm run build -w client",
+    "start": "npm run start -w server",
+    "setup": "npm run setup -w server"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
