@@ -282,4 +282,119 @@ router.get("/plans", (_req, res) => {
   res.json({ plans: TIERS });
 });
 
+// ----------  FIRST-TIME SETUP  ----------
+// Set clinic details + onboard while staff can select from the Uganda drug
+// library. Marks the facility onboarded=true so the login flow stops showing
+// the setup wizard. Owner-only.
+router.post("/facility/setup", requireAuth, requireRole("OWNER"), async (req, res) => {
+  try {
+    const {
+      brandName,
+      tagline,
+      logoEmoji,
+      address,
+      phone,
+      subscriptionTier,
+      // selected medicines [{ name, genericName, unitType, quantity, costPrice, sellingPrice, expiryDate ? }]
+      initialStock = [],
+      skipStock,
+    } = req.body;
+
+    const facility = await prisma.facility.update({
+      where: { id: req.user.facilityId },
+      data: {
+        brandName: brandName !== undefined ? brandName : undefined,
+        tagline: tagline !== undefined ? tagline : undefined,
+        logoEmoji: logoEmoji !== undefined ? logoEmoji : undefined,
+        address: address !== undefined ? address : undefined,
+        phone: phone !== undefined ? phone : undefined,
+        subscriptionTier: subscriptionTier && TIERS[subscriptionTier] ? subscriptionTier : undefined,
+        onboarded: true,
+      },
+    });
+
+    // Only create products+inventory when the owner picked initial stock.
+    // If a medicine already exists (by name) we just restock it instead of
+    // duplicating — reducing redundancy like they asked.
+    let created = 0;
+    let restocked = 0;
+    if (!skipStock && Array.isArray(initialStock) && initialStock.length > 0) {
+      for (const m of initialStock) {
+        const existing = await prisma.product.findFirst({
+          where: { facilityId: req.user.facilityId, name: m.name },
+        });
+        if (!existing) {
+          // if library entry has pack info, use it
+          const prod = await prisma.product.create({
+            data: {
+              facilityId: req.user.facilityId,
+              name: m.name,
+              genericName: m.genericName || null,
+              tabletPrice: m.tabletPrice != null ? Number(m.tabletPrice) : null,
+              stripPrice: m.stripPrice != null ? Number(m.stripPrice) : null,
+              boxPrice: m.boxPrice != null ? Number(m.boxPrice) : null,
+              costPrice: Number(m.costPrice || 0),
+              stripsPerBox: m.stripsPerBox ? Number(m.stripsPerBox) : null,
+              tabletsPerStrip: m.tabletsPerStrip ? Number(m.tabletsPerStrip) : null,
+            },
+          });
+          await prisma.inventory.create({
+            data: {
+              facilityId: req.user.facilityId,
+              productId: prod.id,
+              drugName: m.name,
+              unitType: m.unitType || "Strip of 10",
+              quantity: Number(m.quantity) || 0,
+              costPrice: Number(m.costPrice || 0),
+              sellingPrice: Number(m.sellingPrice || m.costPrice || 0),
+              expiryDate: m.expiryDate ? new Date(m.expiryDate) : null,
+              reorderLevel: Number(m.reorderLevel || 10),
+            },
+          });
+          created++;
+        } else {
+          // restock the existing product's default batch (increase quantity)
+          const inv = await prisma.inventory.findFirst({
+            where: { facilityId: req.user.facilityId, productId: existing.id },
+          });
+          if (inv) {
+            await prisma.inventory.update({
+              where: { id: inv.id },
+              data: {
+                quantity: { increment: Number(m.quantity) || 0 },
+                costPrice: m.costPrice != null ? Number(m.costPrice) : inv.costPrice,
+              },
+            });
+            restocked++;
+          } else {
+            await prisma.inventory.create({
+              data: {
+                facilityId: req.user.facilityId,
+                productId: existing.id,
+                drugName: m.name,
+                unitType: m.unitType || "Strip of 10",
+                quantity: Number(m.quantity) || 0,
+                costPrice: Number(m.costPrice || 0),
+                sellingPrice: Number(m.sellingPrice || m.costPrice || 0),
+                expiryDate: m.expiryDate ? new Date(m.expiryDate) : null,
+                reorderLevel: Number(m.reorderLevel || 10),
+              },
+            });
+            created++;
+          }
+        }
+      }
+    }
+
+    res.json({
+      facility: serializeFacility(facility),
+      stockAdded: created,
+      stockRestocked: restocked,
+      onboarded: true,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

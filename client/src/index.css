@@ -81,6 +81,24 @@ body {
   .print-area.receipt-mode .text-2xl {
     font-size: 20px;
   }
+  /* Phone / A4 PDF receipt (well-decorated brand sheet) */
+  .print-area.phone-receipt {
+    width: 100%;
+    max-width: 190mm;
+    padding: 10mm 12mm;
+    font-size: 12px;
+    font-family:
+      ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    background: #fff;
+    color: #1e293b;
+  }
+  .print-area.phone-receipt .phone-receipt-header {
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    border-radius: 14px;
+    padding: 16px 18px;
+    color: #fff;
+  }
   /* Sheets (balance sheet / reports) */
   .print-area.sheet-mode {
     width: 100%;

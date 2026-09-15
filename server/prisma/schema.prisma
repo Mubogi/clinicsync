@@ -27,6 +27,10 @@ model Facility {
   logoEmoji        String?
   address          String?
   phone            String?
+  // Onboarding: whether the owner has finished first-time setup (clinic details,
+  // medicine library pick). Set true on first login through the setup flow.
+  onboarded        Boolean               @default(false)
+  inviteCode       String?               @unique // staff join link token (owner-generated)
   createdAt        DateTime              @default(now())
   updatedAt        DateTime              @updatedAt
   users            User[]
@@ -38,6 +42,8 @@ model Facility {
   priceHistory     PriceHistory[]
   stockMovements   StockMovement[]
   rememberTokens   RememberToken[]
+  invites          FacilityInvite[]
+  deleteRequests   DeleteRequest[]
 }
 
 // Remember-me persistent sessions (per user+facility, auto-expire)
@@ -81,6 +87,13 @@ model Product {
   boxPrice     Float?
   // Purchased (cost) — used to compute expected revenue
   costPrice    Float          @default(0)
+  // Pack composition ("I bought a box, how do I price a strip & tablet?")
+  stripsPerBox Int? // how many strips are inside one box
+  tabletsPerStrip Int? // how many tablets are inside one strip
+  // Reorder guidance in each unit (show "low" when stock <= reorder)
+  reorderTablets Int? @default(50)
+  reorderStrips  Int? @default(10)
+  reorderBoxes   Int? @default(5)
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
   inventories  Inventory[] // stock batches with expiry
@@ -197,4 +210,39 @@ model DailyReconciliation {
   drugsBoughtTotal Float
   isClosed         Boolean  @default(false)
   createdAt        DateTime @default(now())
+}
+
+// ============ STAFF JOIN / INVITES ============
+
+// Owner-generated invite so staff join the correct clinic/pharmacy via a share
+// link or QR code — they never have to guess the facility name. Single-use.
+model FacilityInvite {
+  id         String   @id @default(uuid())
+  facilityId String
+  facility   Facility @relation(fields: [facilityId], references: [id])
+  token      String   @unique
+  role       String   @default("CASHIER") // role granted when this invite is used
+  createdBy  String   // owner user id
+  usesLeft   Int      @default(1)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+}
+
+// ============ DELETE APPROVAL WORKFLOW ============
+
+// Non-owner staff request to delete a transaction/expense with a reason;
+// the owner approves or rejects. Owners can delete directly.
+model DeleteRequest {
+  id         String    @id @default(uuid())
+  facilityId String
+  facility   Facility  @relation(fields: [facilityId], references: [id])
+  kind       String    // SALE or EXPENSE
+  targetId   String    // sale id or expense id
+  reason     String
+  status     String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  requestedBy String?  // user name snapshot
+  requestedById String? // user id
+  approvedBy String? // owner user name
+  approvedAt DateTime?
+  createdAt  DateTime  @default(now())
 }

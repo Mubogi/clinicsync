@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Search, AlertTriangle, X } from "lucide-react";
+import { Plus, Search, AlertTriangle, X, PackagePlus, Boxes, BookOpen, TrendingUp } from "lucide-react";
 import { apiFetch } from "../lib/api.js";
 import { inventoryDb, saveDoc } from "../lib/db.js";
 import { runSync } from "../lib/sync.js";
 import { fmtMoney, fmtDate, cx } from "../lib/utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
+import MedicineLibrary from "../components/MedicineLibrary.jsx";
 
 const TYPES = ["Strip of 10", "Strip of 6", "Bottle", "Box", "Tablet", "Sachet"];
 
@@ -20,6 +21,10 @@ export default function Inventory() {
   const [editing, setEditing] = useState(null);
   const [notice, setNotice] = useState("");
   const [syncing, setSyncing] = useState(false);
+  // Buy-a-box modal
+  const [showBuyBox, setShowBuyBox] = useState(false);
+  // Library picker
+  const [showLibrary, setShowLibrary] = useState(false);
 
   const [form, setForm] = useState({
     drugName: "",
@@ -29,6 +34,15 @@ export default function Inventory() {
     sellingPrice: "",
     expiryDate: "",
     reorderLevel: "10",
+  });
+
+  // Buy-a-box form
+  const [boxForm, setBoxForm] = useState({
+    productId: "",
+    boxes: "",
+    costPerBox: "",
+    expiryDates: "", // CSV or one shared expiry
+    supplier: "",
   });
 
   async function load() {
@@ -70,6 +84,23 @@ export default function Inventory() {
     setShowForm(true);
   }
 
+  // Select a medicine from the Uganda library → prefill the add form
+  function handleLibrarySelect(m) {
+    const prices = m.commonPrices || {};
+    setEditing(null);
+    setForm({
+      drugName: m.name,
+      unitType: m.defaultUnit || "Strip of 10",
+      quantity: "",
+      costPrice: String(prices.costPrice || ""),
+      sellingPrice: String(prices.stripPrice || prices.boxPrice || ""),
+      expiryDate: "",
+      reorderLevel: "10",
+    });
+    setShowForm(true);
+    setShowLibrary(false);
+  }
+
   function openEdit(item) {
     setEditing(item);
     setForm({
@@ -82,6 +113,54 @@ export default function Inventory() {
       reorderLevel: String(item.reorderLevel),
     });
     setShowForm(true);
+  }
+
+  // Buy a box: create product (if needed) then restock box+strips+tablets
+  // from one purchase — "I bought a box at X amount, how do I sell strips/tablets?"
+  async function submitBuyBox(e) {
+    e.preventDefault();
+    const { productId, boxes, costPerBox, expiryDates, supplier } = boxForm;
+    if (!productId || !boxes || !costPerBox) {
+      setNotice("Choose a medicine, boxes bought and cost per box");
+      setTimeout(() => setNotice(""), 3000);
+      return;
+    }
+    const sharedExpiry = expiryDates.split(",")[0]?.trim() || null;
+    try {
+      const res = await apiFetch("/inventory/buy-pack", {
+        method: "POST",
+        body: JSON.stringify({
+          productId,
+          boxes: Number(boxes),
+          costPerBox: Number(costPerBox),
+          expiryDate: sharedExpiry || null,
+          supplier: supplier || null,
+        }),
+      });
+      setShowBuyBox(false);
+      setBoxForm({ productId: "", boxes: "", costPerBox: "", expiryDates: "", supplier: "" });
+      setNotice(
+        `Added ${res.boxes} box(es) → ${res.strips} strips + ${res.tablets} tablets. Sell any unit.`
+      );
+      setTimeout(() => setNotice(""), 5000);
+      load();
+      runSync().catch(() => {});
+    } catch (err) {
+      setNotice(err.message);
+      setTimeout(() => setNotice(""), 3500);
+    }
+  }
+
+  // Open buy-a-box prefilled with an existing product
+  function openBuyBox(prefilled) {
+    setBoxForm({
+      productId: prefilled?.productId || prefilled?.id || "",
+      boxes: "",
+      costPerBox: prefilled?.costPrice || "",
+      expiryDates: "",
+      supplier: "",
+    });
+    setShowBuyBox(true);
   }
 
   async function submit(e) {
@@ -132,6 +211,25 @@ export default function Inventory() {
     }
   }
 
+  // Restock an existing item by increasing its quantity (with movement log)
+  async function restock(item) {
+    const addQty = prompt(`Restock "${item.drugName}" — how many ${item.unitType} to add?`, "10");
+    if (addQty == null || isNaN(Number(addQty)) || Number(addQty) <= 0) return;
+    try {
+      await apiFetch(`/inventory/${item.id}/adjust`, {
+        method: "POST",
+        body: JSON.stringify({ delta: Number(addQty), reason: "RESTOCK" }),
+      });
+      setNotice(`Restocked ${addQty} × ${item.unitType} of ${item.drugName}.`);
+      setTimeout(() => setNotice(""), 3500);
+      load();
+      runSync().catch(() => {});
+    } catch (err) {
+      setNotice(err.message);
+      setTimeout(() => setNotice(""), 3500);
+    }
+  }
+
   async function remove(id) {
     if (!confirm("Delete this item permanently?")) return;
     try {
@@ -150,7 +248,16 @@ export default function Inventory() {
           <h1 className="text-2xl font-bold text-slate-900">Inventory</h1>
           <p className="text-sm text-slate-500">Stock levels, pricing & FEFO batch expiry</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {canEdit && (
+            <button
+              onClick={() => setShowLibrary(true)}
+              className="flex items-center gap-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-medium px-3 py-2 rounded-lg"
+              title="Add from the Uganda drug library"
+            >
+              <BookOpen size={16} /> Drug library
+            </button>
+          )}
           <button
             onClick={handleSync}
             disabled={syncing}
@@ -159,12 +266,21 @@ export default function Inventory() {
             {syncing ? "Syncing…" : "Sync"}
           </button>
           {canEdit && (
-            <button
-              onClick={openAdd}
-              className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-3 py-2 rounded-lg"
-            >
-              <Plus size={16} /> Add item
-            </button>
+            <>
+              <button
+                onClick={() => openBuyBox(null)}
+                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium px-3 py-2 rounded-lg"
+                title="Buy boxes of a drug and ClinicSync splits them into strips + tablets"
+              >
+                <Boxes size={16} /> Buy a box
+              </button>
+              <button
+                onClick={openAdd}
+                className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium px-3 py-2 rounded-lg"
+              >
+                <Plus size={16} /> Add item
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -236,7 +352,17 @@ export default function Inventory() {
                     )}
                   </td>
                   {canEdit && (
-                    <td className="px-4 py-3 text-right space-x-2">
+                    <td className="px-4 py-3 text-right space-x-3 whitespace-nowrap">
+                      <button onClick={() => restock(item)} className="text-indigo-600 hover:text-indigo-700 text-xs font-semibold">
+                        Restock
+                      </button>
+                      <button
+                        onClick={() => openBuyBox(item)}
+                        className="text-sky-600 hover:text-sky-700 text-xs font-semibold"
+                        title="Buy this drug as boxes of strips/tablets"
+                      >
+                        Buy box
+                      </button>
                       <button onClick={() => openEdit(item)} className="text-emerald-600 hover:text-emerald-700 text-xs font-medium">
                         Edit
                       </button>
@@ -356,6 +482,122 @@ export default function Inventory() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Buy-a-box modal — buy boxes at a price, ClinicSync splits into strips + tablets */}
+      {showBuyBox && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <PackagePlus size={18} className="text-indigo-600" />
+                <h2 className="font-bold text-slate-900">Buy a box — split into sellable units</h2>
+              </div>
+              <button onClick={() => setShowBuyBox(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
+            <p className="text-sm text-slate-500 -mt-2 mb-4">
+              Tell us what one box cost and what's inside — ClinicSync auto-breaks it into strips and tablets so you can sell any unit.
+            </p>
+            <form onSubmit={submitBuyBox} className="space-y-3">
+              <Field label="Medicine">
+                <div className="flex gap-2">
+                  <select
+                    className="input flex-1"
+                    value={boxForm.productId}
+                    onChange={(e) => setBoxForm({ ...boxForm, productId: e.target.value })}
+                  >
+                    <option value="">— choose medicine —</option>
+                    {items.filter((i) => i.productId).map((i) => (
+                      <option key={i.productId} value={i.productId}>
+                        {i.drugName}
+                      </option>
+                    ))}
+                    {items.filter((i) => !i.productId).map((i) => (
+                      <option key={i.id} value={i.id}>
+                        {i.drugName} (unlinked)
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowBuyBox(false);
+                      setShowLibrary(true);
+                    }}
+                    className="border border-slate-300 hover:bg-slate-50 text-slate-600 text-sm px-3 rounded-lg shrink-0"
+                    title="Add a new medicine from the drug library first"
+                  >
+                    + New
+                  </button>
+                </div>
+              </Field>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Boxes bought">
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    value={boxForm.boxes}
+                    onChange={(e) => setBoxForm({ ...boxForm, boxes: e.target.value })}
+                    placeholder="e.g. 5"
+                  />
+                </Field>
+                <Field label="Cost per box (UGX)">
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    value={boxForm.costPerBox}
+                    onChange={(e) => setBoxForm({ ...boxForm, costPerBox: e.target.value })}
+                    placeholder="e.g. 15000"
+                  />
+                </Field>
+              </div>
+              <Field label="Supplier (optional)">
+                <input
+                  className="input"
+                  value={boxForm.supplier}
+                  onChange={(e) => setBoxForm({ ...boxForm, supplier: e.target.value })}
+                  placeholder="e.g. Kira Wholesale"
+                />
+              </Field>
+              <Field label="Expiry date">
+                <input
+                  className="input"
+                  type="date"
+                  value={boxForm.expiryDates}
+                  onChange={(e) => setBoxForm({ ...boxForm, expiryDates: e.target.value })}
+                />
+              </Field>
+              <div className="flex gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowBuyBox(false)}
+                  className="flex-1 border border-slate-300 text-slate-700 font-medium py-2.5 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 rounded-lg"
+                >
+                  Buy boxes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Uganda drug library picker */}
+      {showLibrary && (
+        <MedicineLibrary
+          onSelect={handleLibrarySelect}
+          onClose={() => setShowLibrary(false)}
+          title="Add from Uganda drug library"
+        />
       )}
 
       <style>{`.input { width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 0.5rem; font-size: 0.875rem; } .input:focus { outline: none; border-color: #059669; box-shadow: 0 0 0 2px rgba(5,150,105,0.15); }`}</style>

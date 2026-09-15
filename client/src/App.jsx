@@ -2,6 +2,8 @@ import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./context/AuthContext.jsx";
 
 import Login from "./pages/Login.jsx";
+import JoinPage from "./pages/JoinPage.jsx";
+import Setup from "./pages/Setup.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
 import Pos from "./pages/Pos.jsx";
 import Inventory from "./pages/Inventory.jsx";
@@ -16,6 +18,10 @@ function Protected({ children }) {
   const location = useLocation();
   if (!ready) return <div className="min-h-screen flex items-center justify-center text-slate-500">Loading…</div>;
   if (!session) return <Navigate to="/login" state={{ from: location }} replace />;
+  // New facilities that haven't completed first-time setup go to /setup first
+  if (session.facility && session.facility.onboarded === false) {
+    return <Navigate to="/setup" replace />;
+  }
   return <Layout>{children}</Layout>;
 }
 
@@ -23,6 +29,15 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/join" element={<JoinPage />} />
+      <Route
+        path="/setup"
+        element={
+          <Protected>
+            <Setup />
+          </Protected>
+        }
+      />
       <Route
         path="/"
         element={

@@ -109,6 +109,52 @@ router.get("/", async (req, res) => {
 
     const tierInfo = getTier(facility?.subscriptionTier);
 
+    // ---- Weekly + monthly transaction/revenue reports ----
+    const weekKey = (d) => {
+      const x = new Date(d);
+      const onejan = new Date(x.getFullYear(), 0, 1);
+      const day = Math.floor((x - onejan) / (24 * 60 * 60 * 1000));
+      const wk = Math.ceil((day + onejan.getDay() + 1) / 7);
+      return `${x.getFullYear()}-W${String(wk).padStart(2, "0")}`;
+    };
+    const monthKey = (d) => {
+      const x = new Date(d);
+      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}`;
+    };
+
+    const weekly = {};
+    const monthly = {};
+    for (const s of sales) {
+      const wk = weekKey(s.createdAt);
+      if (!weekly[wk]) weekly[wk] = { transactions: 0, revenue: 0, profit: 0, momo: 0, cash: 0 };
+      weekly[wk].transactions += 1;
+      weekly[wk].revenue += s.totalAmount;
+      weekly[wk].profit += s.items.reduce((acc, it) => acc + (it.totalPrice - (it.costPrice || 0) * it.quantity), 0);
+      weekly[wk].momo += s.momoPaid || 0;
+      weekly[wk].cash += s.cashPaid || 0;
+
+      const mk = monthKey(s.createdAt);
+      if (!monthly[mk]) monthly[mk] = { transactions: 0, revenue: 0, profit: 0, momo: 0, cash: 0 };
+      monthly[mk].transactions += 1;
+      monthly[mk].revenue += s.totalAmount;
+      monthly[mk].profit += s.items.reduce((acc, it) => acc + (it.totalPrice - (it.costPrice || 0) * it.quantity), 0);
+      monthly[mk].momo += s.momoPaid || 0;
+      monthly[mk].cash += s.cashPaid || 0;
+    }
+    for (const e of expenses) {
+      const wk = weekKey(e.createdAt);
+      if (weekly[wk]) weekly[wk].expenses = (weekly[wk].expenses || 0) + e.amount;
+      const mk = monthKey(e.createdAt);
+      if (monthly[mk]) monthly[mk].expenses = (monthly[mk].expenses || 0) + e.amount;
+    }
+
+    const weekList = Object.entries(weekly)
+      .map(([period, v]) => ({ period, ...{ transactions: v.transactions, revenue: Math.round(v.revenue), profit: Math.round(v.profit || 0), momo: Math.round(v.momo), cash: Math.round(v.cash), expenses: Math.round(v.expenses || 0) } }))
+      .sort((a, b) => a.period.localeCompare(b.period));
+    const monthList = Object.entries(monthly)
+      .map(([period, v]) => ({ period, ...{ transactions: v.transactions, revenue: Math.round(v.revenue), profit: Math.round(v.profit || 0), momo: Math.round(v.momo), cash: Math.round(v.cash), expenses: Math.round(v.expenses || 0) } }))
+      .sort((a, b) => a.period.localeCompare(b.period));
+
     res.json({
       rangeDays: days,
       totalRevenue,
@@ -121,6 +167,8 @@ router.get("/", async (req, res) => {
       costOfGoods,
       revenueByDay,
       expensesByDay,
+      weekly: weekList,
+      monthly: monthList,
       topDrugs,
       lowStock,
       expiringSoon,

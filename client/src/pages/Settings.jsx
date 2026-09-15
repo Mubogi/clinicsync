@@ -11,6 +11,14 @@ import {
   LogOut,
   UserPlus,
   Hash,
+  Link2,
+  Check,
+  Copy,
+  MessageCircle,
+  ClipboardList,
+  CheckSquare,
+  XCircle,
+  Clock,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiFetch } from "../lib/api.js";
@@ -39,6 +47,77 @@ export default function Settings() {
 
   const [busy, setBusy] = useState(false);
 
+  // Invites (owner only)
+  const [invites, setInvites] = useState([]);
+  const [inviteRole, setInviteRole] = useState("CASHIER");
+  const [inviteLink, setInviteLink] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  // Delete-approval queue (owner approves, staff see their own)
+  const [approvals, setApprovals] = useState([]);
+  const isOwner = role === "OWNER";
+
+  const loadInvites = async () => {
+    if (!isOwner) return;
+    try {
+      const d = await apiFetch("/team/invites");
+      setInvites(Array.isArray(d) ? d : []);
+    } catch {
+      /* non-fatal */
+    }
+  };
+
+  const loadApprovals = async () => {
+    try {
+      const d = await apiFetch("/approvals/requests");
+      setApprovals(Array.isArray(d) ? d : []);
+    } catch {
+      /* non-fatal */
+    }
+  };
+
+  async function createInvite() {
+    setBusy(true);
+    try {
+      const d = await apiFetch("/team/invites", {
+        method: "POST",
+        body: JSON.stringify({ role: inviteRole }),
+      });
+      const full = `${window.location.origin}${d.link}`;
+      setInviteLink(full);
+      loadInvites();
+    } catch (e) {
+      flash(false, e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function copyInvite() {
+    navigator.clipboard?.writeText(inviteLink).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function revokeInvite(id) {
+    try {
+      await apiFetch(`/team/invites/${id}`, { method: "DELETE" });
+      loadInvites();
+    } catch (e) {
+      flash(false, e.message);
+    }
+  }
+
+  async function decideApproval(id, decision) {
+    try {
+      await apiFetch(`/approvals/requests/${id}/${decision}`, { method: "POST" });
+      loadApprovals();
+      flash(true, decision === "approve" ? "Approved — item deleted." : "Request rejected.");
+    } catch (e) {
+      flash(false, e.message);
+    }
+  }
+
   const loadUsers = async () => {
     try {
       const d = await apiFetch("/auth/users");
@@ -51,6 +130,8 @@ export default function Settings() {
 
   useEffect(() => {
     loadUsers();
+    loadInvites();
+    loadApprovals();
   }, []);
 
   const flash = (ok, txt) => {
@@ -337,6 +418,153 @@ export default function Settings() {
         </form>
       </div>
 
+      {/* Staff invites — owner generates a link/QR code */}
+      {isOwner && (
+        <div className="bg-white rounded-xl border border-slate-200">
+          <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+            <Link2 size={18} className="text-slate-400" />
+            <h2 className="font-semibold text-slate-900">Invite staff by link</h2>
+            <span className="text-[11px] text-slate-400">No passwords to remember — tap the link on their phone</span>
+          </div>
+          <div className="px-5 py-4 space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="text-[11px] font-medium text-slate-500">Role</label>
+              <select
+                value={inviteRole}
+                onChange={(e) => setInviteRole(e.target.value)}
+                className="px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
+              >
+                <option value="CASHIER">Cashier</option>
+                <option value="PHARMACIST">Pharmacist</option>
+              </select>
+              <button
+                onClick={createInvite}
+                disabled={busy}
+                className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg"
+              >
+                <Link2 size={15} /> Generate link
+              </button>
+            </div>
+
+            {inviteLink && (
+              <div className="flex flex-wrap items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-lg p-3">
+                <div className="bg-white p-2 rounded-lg border border-emerald-100 shrink-0">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(inviteLink)}`}
+                    alt="Staff invite QR code"
+                    className="w-24 h-24"
+                  />
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <div className="text-xs font-medium text-slate-700 mb-1">Scan with their phone — opens the join page:</div>
+                  <code className="text-xs text-emerald-800 break-all">{inviteLink}</code>
+                </div>
+                <button
+                  onClick={copyInvite}
+                  className="text-xs font-medium text-emerald-700 hover:underline flex items-center gap-1 shrink-0"
+                >
+                  {copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy</>}
+                </button>
+              </div>
+            )}
+
+            {invites.length > 0 && (
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-400">
+                    <tr>
+                      <th className="px-4 py-2">Invite</th>
+                      <th className="px-4 py-2">Role</th>
+                      <th className="px-4 py-2">Expires</th>
+                      <th className="px-4 py-2 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {invites.map((inv) => (
+                      <tr key={inv.id}>
+                        <td className="px-4 py-2 font-mono text-xs text-slate-600">
+                          …{inv.token.slice(0, 10)}… {inv.usesLeft === 0 && <span className="text-amber-600 font-medium">(used)</span>}
+                        </td>
+                        <td className="px-4 py-2 text-xs">{inv.role}</td>
+                        <td className="px-4 py-2 text-xs text-slate-500">{fmtDate(inv.expiresAt)}</td>
+                        <td className="px-4 py-2 text-right">
+                          <button onClick={() => revokeInvite(inv.id)} className="text-xs text-red-500 hover:underline">Revoke</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="text-[11px] text-slate-400">
+              The link expires in 14 days and can be used once. It joins them directly to <strong>{session?.facility?.brandName || "this pharmacy"}</strong> — no clinic picking.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Delete-approval queue */}
+      <div className="bg-white rounded-xl border border-slate-200">
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <ClipboardList size={18} className="text-slate-400" />
+            <h2 className="font-semibold text-slate-900">
+              {isOwner ? "Delete approvals" : "My delete requests"}
+            </h2>
+          </div>
+          {approvals.filter((a) => a.status === "PENDING").length > 0 && (
+            <span className="text-[11px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">
+              {approvals.filter((a) => a.status === "PENDING").length} pending
+            </span>
+          )}
+        </div>
+        <div className="px-5 py-4 space-y-2">
+          {approvals.length === 0 ? (
+            <div className="text-sm text-slate-400 py-4 text-center">
+              {isOwner
+                ? "No delete requests yet. When staff ask to remove a sale/expense, the request appears here for you to approve or reject."
+                : "You haven't requested any deletions. Deletes you request go to the owner for approval."}
+            </div>
+          ) : (
+            approvals.map((a) => (
+              <div key={a.id} className="flex flex-wrap items-center gap-3 border border-slate-100 rounded-lg p-3">
+                <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                  {a.status === "PENDING" ? <Clock size={15} className="text-amber-500" /> : a.status === "APPROVED" ? <CheckSquare size={15} className="text-emerald-600" /> : <XCircle size={15} className="text-red-400" />}
+                </div>
+                <div className="flex-1 min-w-[180px]">
+                  <div className="text-sm font-medium text-slate-800">
+                    {a.kind} · <span className="font-mono text-xs">{a.targetId?.slice(0, 8)}</span>
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    “{a.reason}” — requested by {a.requestedBy || "—"} on {fmtDate(a.createdAt)}
+                    {a.status !== "PENDING" && <span className="text-slate-400"> · {a.approvedBy} {a.status === "APPROVED" ? "approved" : "rejected"}</span>}
+                  </div>
+                </div>
+                {a.status === "PENDING" && isOwner && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => decideApproval(a.id, "approve")}
+                      className="flex items-center gap-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium px-3 py-1.5 rounded-lg"
+                    >
+                      <CheckSquare size={13} /> Approve & delete
+                    </button>
+                    <button
+                      onClick={() => decideApproval(a.id, "reject")}
+                      className="flex items-center gap-1 border border-slate-300 text-slate-600 hover:bg-slate-50 text-xs font-medium px-3 py-1.5 rounded-lg"
+                    >
+                      <XCircle size={13} /> Reject
+                    </button>
+                  </div>
+                )}
+                {a.status === "PENDING" && !isOwner && (
+                  <span className="text-[11px] text-amber-600 bg-amber-50 px-2 py-1 rounded-full">Waiting for owner</span>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
       {/* Subscription / plan */}
       <div className="bg-white rounded-xl border border-slate-200">
         <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
@@ -352,45 +580,72 @@ export default function Settings() {
               <p className="text-xs text-slate-500">Feature limits and gating are enforced by your plan.</p>
             </div>
           </div>
-          <div className="grid sm:grid-cols-3 gap-3">
-            {Object.entries(TIERS).map(([k, v]) => (
-              <button
-                key={k}
-                disabled={k === currentTier}
-                onClick={async () => {
-                  try {
-                    setBusy(true);
-                    const updated = await apiFetch("/auth/facility/tier", {
-                      method: "PATCH",
-                      body: JSON.stringify({ subscriptionTier: k }),
-                    });
-                    session.facility = updated;
-                    window.localStorage.setItem(
-                      "clinicsync_session",
-                      JSON.stringify({ user: session.user, facility: updated })
-                    );
-                    window.dispatchEvent(new Event("clinicSync:facility-updated"));
-                    flash(true, `Switched to ${v.label} plan.`);
-                    loadUsers();
-                  } catch (e) {
-                    flash(false, e.message);
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-                className={`text-left border rounded-xl p-4 transition-colors ${
-                  k === currentTier
-                    ? "border-emerald-500 bg-emerald-50"
-                    : "border-slate-200 hover:border-emerald-300"
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-slate-900" style={{ color: v.color }}>{v.label}</span>
-                  {k === currentTier && <CheckCircle2 size={16} className="text-emerald-600" />}
+          <div className="grid md:grid-cols-3 gap-3">
+            {Object.entries(TIERS).map(([k, v]) => {
+              const isCurrent = k === currentTier;
+              return (
+                <div
+                  key={k}
+                  className={`text-left border rounded-xl p-4 transition-colors relative ${isCurrent ? "border-emerald-500 bg-emerald-50" : "border-slate-200 hover:border-emerald-300"}`}
+                >
+                  {v.popular && !isCurrent && (
+                    <span className="absolute -top-2 right-3 text-[9px] font-bold bg-amber-400 text-amber-900 px-2 py-0.5 rounded-full uppercase tracking-wide">Most popular</span>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-900" style={{ color: v.color }}>{v.label}</span>
+                    {isCurrent && <CheckCircle2 size={16} className="text-emerald-600" />}
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-1">
+                    UGX {v.priceUgx === 0 ? "0 / mo" : `${Math.round(v.priceUgx / 1000)}k / mo`} · {v.maxUsers} user{v.maxUsers > 1 ? "s" : ""} · {v.maxProducts === 5000 ? "∞" : v.maxProducts} products
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1">{v.tagline}</div>
+                  <ul className="mt-3 space-y-1">
+                    {v.features.map((f) => (
+                      <li key={f} className="text-[11px] text-slate-600 flex items-start gap-1.5">
+                        <Check size={12} className="text-emerald-500 mt-0.5 shrink-0" /> {f}
+                      </li>
+                    ))}
+                    {v.whatsMissing && v.whatsMissing.length > 0 && (
+                      <li className="text-[10px] text-slate-400 pt-1 italic">Missing: {v.whatsMissing.join(" · ")}</li>
+                    )}
+                  </ul>
+                  {!isCurrent && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          setBusy(true);
+                          const updated = await apiFetch("/auth/facility/tier", {
+                            method: "PATCH",
+                            body: JSON.stringify({ subscriptionTier: k }),
+                          });
+                          session.facility = updated;
+                          window.localStorage.setItem(
+                            "clinicsync_session",
+                            JSON.stringify({ user: session.user, facility: updated })
+                          );
+                          window.dispatchEvent(new Event("clinicSync:facility-updated"));
+                          flash(true, `Switched to ${v.label} plan.`);
+                          loadUsers();
+                        } catch (e) {
+                          flash(false, e.message);
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                      className={`mt-3 w-full text-white text-sm font-medium py-2 rounded-lg ${
+                        v.popular ? "bg-amber-500 hover:bg-amber-600" : "bg-emerald-600 hover:bg-emerald-700"
+                      } disabled:opacity-50`}
+                      disabled={busy}
+                    >
+                      {k === "BASIC" ? "Downgrade" : "Upgrade"}
+                    </button>
+                  )}
+                  {isCurrent && (
+                    <div className="mt-3 w-full text-center text-[11px] font-medium text-emerald-600 py-2 border border-emerald-300 rounded-lg">Current plan</div>
+                  )}
                 </div>
-                <div className="text-[11px] text-slate-500 mt-1">{v.maxUsers} users · {v.maxProducts} products</div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

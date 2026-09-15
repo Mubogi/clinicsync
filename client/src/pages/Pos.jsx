@@ -20,6 +20,7 @@ export default function Pos() {
   const [receipt, setReceipt] = useState(null);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [printMode, setPrintMode] = useState("thermal");
   const printRef = useRef(null);
 
   async function loadInventory() {
@@ -447,8 +448,32 @@ export default function Pos() {
       {/* Receipt modal */}
       {receipt && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full">
-            <div ref={printRef} className="print-area receipt-mode p-5">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm">
+            {/* Receipt format toggle */}
+            <div className="flex items-center justify-center gap-1 p-3 no-print border-b border-slate-100">
+              <button
+                onClick={() => setPrintMode((m) => (m === "thermal" ? "phone" : "thermal"))}
+                title="Toggle between 80mm thermal receipt and A4 phone/brand PDF"
+                className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-medium px-3 py-1.5 rounded-full"
+              >
+                {printMode === "thermal" ? (
+                  <>
+                    <Printer size={13} /> 80mm thermal
+                    <span className="text-slate-400">→</span>
+                    <Smartphone size={13} /> Phone PDF
+                  </>
+                ) : (
+                  <>
+                    <Smartphone size={13} /> Phone PDF
+                    <span className="text-slate-400">→</span>
+                    <Printer size={13} /> 80mm thermal
+                  </>
+                )}
+              </button>
+            </div>
+
+            {printMode === "thermal" ? (
+              <div ref={printRef} className="print-area receipt-mode p-5">
               {/* Brand header */}
               <div className="text-center">
                 <div className="text-lg font-bold text-slate-900">{session?.facility?.logoEmoji ? `${session?.facility?.logoEmoji} ` : ""}{session?.facility?.brandName || session?.facility?.name}</div>
@@ -544,6 +569,127 @@ export default function Pos() {
                 <div className="text-[9px] text-slate-400 mt-0.5">clinic-sync · offline-first · Uganda</div>
               </div>
             </div>
+            ) : (
+              /* ===== PHONE / A4 PDF receipt (well-decorated brand sheet) ===== */
+              <div ref={printRef} className="print-area phone-receipt p-5">
+                {/* Header with brand gradient accent */}
+                <div className="phone-receipt-header">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-2xl shrink-0">
+                      {session?.facility?.logoEmoji || "🏥"}
+                    </div>
+                    <div>
+                      <div className="text-xl font-extrabold text-white leading-tight">
+                        {session?.facility?.brandName || session?.facility?.name}
+                      </div>
+                      {session?.facility?.tagline && (
+                        <div className="text-[11px] text-emerald-100">{session?.facility?.tagline}</div>
+                      )}
+                    </div>
+                  </div>
+                  {(session?.facility?.address || session?.facility?.phone) && (
+                    <div className="mt-2 text-[11px] text-emerald-50/90">
+                      {[session?.facility?.address, session?.facility?.phone].filter(Boolean).join(" · ")}
+                    </div>
+                  )}
+                </div>
+
+                <div className="text-center mt-4">
+                  <span className="inline-block bg-emerald-50 text-emerald-700 text-[10px] font-bold tracking-[0.3em] uppercase px-3 py-1 rounded-full">
+                    Official Receipt
+                  </span>
+                </div>
+
+                {/* Sale metadata */}
+                <div className="mt-4 grid grid-cols-2 gap-2 text-[12px]">
+                  <div>
+                    <div className="text-slate-400 text-[10px] uppercase tracking-wide">Receipt no.</div>
+                    <div className="font-mono font-bold text-slate-900 text-base">#{receipt.receiptNumber}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-slate-400 text-[10px] uppercase tracking-wide">Date</div>
+                    <div className="font-medium text-slate-700">{fmtDate(receipt.createdAt)}</div>
+                    <div className="font-medium text-slate-700">{fmtTime(receipt.createdAt)}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400 text-[10px] uppercase tracking-wide">Cashier</div>
+                    <div className="font-medium text-slate-700">{receipt.cashierName || session?.user?.name || "—"}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-slate-400 text-[10px] uppercase tracking-wide">Payment</div>
+                    <div className="font-medium text-slate-700">
+                      {receipt.paymentMethod}
+                      {receipt.momoNetwork ? ` · ${receipt.momoNetwork}` : ""}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="print-rule mt-4" />
+
+                {/* Items table */}
+                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.2em] mb-1">Items purchased</div>
+                <table className="print-table mt-1">
+                  <thead>
+                    <tr>
+                      <th>Item</th>
+                      <th className="num">Qty</th>
+                      <th className="num">Unit</th>
+                      <th className="num">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(receipt.items || []).map((it, i) => (
+                      <tr key={i} className="border-t border-slate-100">
+                        <td>
+                          <span className="text-slate-900 font-semibold">{it.drugName}</span>
+                          {it.unitType ? (
+                            <div className="text-[9px] text-slate-400 uppercase tracking-wide">{unitLabel(it.unitType)}</div>
+                          ) : null}
+                        </td>
+                        <td className="num text-slate-700">{it.quantity}</td>
+                        <td className="num text-slate-700">{fmtShortMoney(it.unitPrice)}</td>
+                        <td className="num text-slate-900 font-bold">{fmtShortMoney(it.totalPrice)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                <div className="print-rule-solid" />
+
+                {/* Totals box */}
+                <div className="bg-slate-50 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-sm text-slate-500">Subtotal</span>
+                    <span className="text-sm font-semibold text-slate-800">{fmtMoney(receipt.totalAmount)}</span>
+                  </div>
+                  {receipt.paymentMethod === "CASH" && receipt.cashPaid > 0 && (
+                    <>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm text-slate-500">Cash tendered</span>
+                        <span className="text-sm text-slate-700">{fmtMoney(receipt.cashPaid)}</span>
+                      </div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-sm text-slate-500">Change</span>
+                        <span className="text-sm font-semibold text-emerald-600">{fmtMoney(receipt.cashPaid - receipt.totalAmount)}</span>
+                      </div>
+                    </>
+                  )}
+                  <div className="border-t border-slate-200 mt-2 pt-2 flex items-center justify-between">
+                    <span className="text-base font-bold text-slate-900">TOTAL PAID</span>
+                    <span className="text-xl font-extrabold text-emerald-700">{fmtMoney(receipt.totalAmount)}</span>
+                  </div>
+                </div>
+
+                {/* Thank-you footer */}
+                <div className="mt-6 text-center">
+                  <div className="text-sm font-semibold text-slate-800">Thank you for shopping with us! 🙏</div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">This serves as your official receipt — please keep it for reference.</div>
+                  <div className="mt-4 border-t border-dotted border-slate-300 pt-3 text-[10px] text-slate-400">
+                    ClinicSync · offline-first · Uganda · {fmtTime(receipt.createdAt)}
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="flex gap-2 p-4 no-print">
               <button
                 onClick={() => setReceipt(null)}
@@ -555,7 +701,7 @@ export default function Pos() {
                 onClick={printReceipt}
                 className="flex-1 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2.5 rounded-lg"
               >
-                <Printer size={16} /> Print
+                <Printer size={16} /> Print {printMode === "thermal" ? "receipt" : "PDF"}
               </button>
             </div>
           </div>

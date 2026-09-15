@@ -20,6 +20,7 @@ const CATEGORIES = [
 
 export default function Expenses() {
   const { session } = useAuth();
+  const role = session?.user?.role;
   const [expenses, setExpenses] = useState([]);
   const [showForm, setShowForm] = useState(false);
   const [notice, setNotice] = useState("");
@@ -77,15 +78,33 @@ export default function Expenses() {
   }
 
   async function remove(id) {
-    try {
-      await apiFetch(`/expenses/${id}`, { method: "DELETE" });
-      load();
-    } catch {
+    // Owners delete directly; staff request approval (with a reason).
+    if (role === "OWNER") {
+      if (!confirm("Delete this expense permanently?")) return;
       try {
-        const doc = await expensesDb.get(id);
-        await expensesDb.remove(doc);
-      } catch {}
-      load();
+        await apiFetch(`/expenses/${id}`, { method: "DELETE" });
+        load();
+      } catch {
+        try {
+          const doc = await expensesDb.get(id);
+          await expensesDb.remove(doc);
+        } catch {}
+        load();
+      }
+    } else {
+      const reason = prompt("Why should this expense be deleted? The owner must approve.");
+      if (!reason || !reason.trim()) return;
+      try {
+        await apiFetch("/approvals/request", {
+          method: "POST",
+          body: JSON.stringify({ kind: "EXPENSE", id, reason }),
+        });
+        setNotice("Delete request sent to the owner for approval.");
+        setTimeout(() => setNotice(""), 4000);
+      } catch (e) {
+        setNotice(e.message);
+        setTimeout(() => setNotice(""), 4000);
+      }
     }
   }
 

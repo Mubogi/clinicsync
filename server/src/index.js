@@ -17,6 +17,9 @@ import syncRoutes from "./routes/sync.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import productRoutes from "./routes/products.js";
 import adminRoutes from "./routes/admin.js";
+import teamRoutes, { handleJoin as teamJoinHandler } from "./routes/team.js";
+import approvalRoutes from "./routes/approvals.js";
+import libraryRoutes from "./routes/library.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,6 +40,12 @@ app.use("/api/reconciliation", requireAuth, reconciliationRoutes);
 app.use("/api/sync", requireAuth, syncRoutes);
 app.use("/api/dashboard", requireAuth, dashboardRoutes);
 app.use("/api/admin", requireAuth, adminRoutes);
+// The join (invite redemption) endpoint is public — staff use it from a link/QR
+// without an account yet. Everything else under /team requires auth.
+app.post("/api/team/join", teamJoinHandler);
+app.use("/api/team", requireAuth, teamRoutes);
+app.use("/api/approvals", requireAuth, approvalRoutes);
+app.use("/api/library", libraryRoutes);
 
 // Serve built client in production
 const clientDist = path.join(__dirname, "..", "..", "client", "dist");

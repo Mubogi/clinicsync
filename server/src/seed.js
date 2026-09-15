@@ -21,6 +21,8 @@ const PRODUCTS = [
     stripPrice: 1000,
     boxPrice: 4800,
     costPrice: 500,
+    stripsPerBox: 10,
+    tabletsPerStrip: 10,
   },
   {
     name: "Amoxicillin 250mg",
@@ -29,6 +31,8 @@ const PRODUCTS = [
     stripPrice: 3000,
     boxPrice: 15000,
     costPrice: 1500,
+    stripsPerBox: 10,
+    tabletsPerStrip: 10,
   },
   {
     name: "Metronidazole 400mg",
@@ -37,6 +41,8 @@ const PRODUCTS = [
     stripPrice: 1600,
     boxPrice: 7800,
     costPrice: 800,
+    stripsPerBox: 20,
+    tabletsPerStrip: 10,
   },
   {
     name: "ORS Sachet",
@@ -45,6 +51,8 @@ const PRODUCTS = [
     stripPrice: null,
     boxPrice: null,
     costPrice: 1200,
+    stripsPerBox: null,
+    tabletsPerStrip: null,
   },
   {
     name: "Ibuprofen 400mg",
@@ -53,6 +61,8 @@ const PRODUCTS = [
     stripPrice: 1500,
     boxPrice: 7200,
     costPrice: 800,
+    stripsPerBox: 10,
+    tabletsPerStrip: 10,
   },
   {
     name: "Cotrimoxazole 480mg",
@@ -61,6 +71,8 @@ const PRODUCTS = [
     stripPrice: 2000,
     boxPrice: 9600,
     costPrice: 1000,
+    stripsPerBox: 10,
+    tabletsPerStrip: 10,
   },
   {
     name: "Cough Syrup (100ml)",
@@ -69,6 +81,8 @@ const PRODUCTS = [
     stripPrice: null,
     boxPrice: null,
     costPrice: 2000,
+    stripsPerBox: null,
+    tabletsPerStrip: null,
   },
   {
     name: "Artemether/Lumefantrine (Coartem)",
@@ -77,6 +91,8 @@ const PRODUCTS = [
     stripPrice: 6000,
     boxPrice: 28000,
     costPrice: 4000,
+    stripsPerBox: 10,
+    tabletsPerStrip: 6,
   },
 ];
 
@@ -115,6 +131,7 @@ async function main() {
       address: "Kampala, Uganda",
       phone: "+256 754 687 597",
       subscriptionTier: "PRO",
+      onboarded: true,
       users: {
         create: [
           { id: "demo-user-owner", name: "Mubogi (Owner)", role: "OWNER", pinCode: ownerPinHash },
@@ -130,7 +147,10 @@ async function main() {
     const pid = "demo-prod-" + slug(product.name);
     await prisma.product.upsert({
       where: { id: pid },
-      update: {},
+      update: {
+        stripsPerBox: product.stripsPerBox,
+        tabletsPerStrip: product.tabletsPerStrip,
+      },
       create: {
         id: pid,
         facilityId: "demo-facility-01",
@@ -140,6 +160,8 @@ async function main() {
         stripPrice: product.stripPrice,
         boxPrice: product.boxPrice,
         costPrice: product.costPrice,
+        stripsPerBox: product.stripsPerBox,
+        tabletsPerStrip: product.tabletsPerStrip,
       },
     });
   }

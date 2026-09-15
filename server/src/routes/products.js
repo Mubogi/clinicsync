@@ -46,17 +46,43 @@ router.get("/:id", async (req, res) => {
 // Owner/Pharmacist creates a product (catalog) with per-unit prices
 router.post("/", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
   try {
-    const { name, genericName, tabletPrice, stripPrice, boxPrice, costPrice } = req.body;
+    const {
+      name,
+      genericName,
+      tabletPrice,
+      stripPrice,
+      boxPrice,
+      costPrice,
+      stripsPerBox,
+      tabletsPerStrip,
+    } = req.body;
+
     if (!name) return res.status(400).json({ error: "name required" });
+
+    // If they bought a box and gave composition, compute strip/tablet sell prices
+    // when not explicitly provided.
+    let computedTablet = tabletPrice != null ? Number(tabletPrice) : null;
+    let computedStrip = stripPrice != null ? Number(stripPrice) : null;
+    const computedBox = boxPrice != null ? Number(boxPrice) : null;
+
+    if (stripsPerBox && computedStrip == null && computedBox != null) {
+      computedStrip = Math.max(1, Math.ceil(computedBox / Number(stripsPerBox) / 100) * 100);
+    }
+    if (tabletsPerStrip && computedTablet == null && computedStrip != null) {
+      computedTablet = Math.max(1, Math.ceil(computedStrip / Number(tabletsPerStrip) / 50) * 50);
+    }
+
     const product = await prisma.product.create({
       data: {
         facilityId: req.user.facilityId,
         name,
         genericName: genericName || null,
-        tabletPrice: tabletPrice != null ? Number(tabletPrice) : null,
-        stripPrice: stripPrice != null ? Number(stripPrice) : null,
-        boxPrice: boxPrice != null ? Number(boxPrice) : null,
+        tabletPrice: computedTablet,
+        stripPrice: computedStrip,
+        boxPrice: computedBox,
         costPrice: Number(costPrice || 0),
+        stripsPerBox: stripsPerBox ? Number(stripsPerBox) : null,
+        tabletsPerStrip: tabletsPerStrip ? Number(tabletsPerStrip) : null,
       },
     });
     res.status(201).json(product);
@@ -74,7 +100,7 @@ router.patch("/:id", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
     });
     if (!product) return res.status(404).json({ error: "Not found" });
 
-    const { name, genericName, tabletPrice, stripPrice, boxPrice, costPrice } = req.body;
+    const { name, genericName, tabletPrice, stripPrice, boxPrice, costPrice, stripsPerBox, tabletsPerStrip } = req.body;
 
     const history = [];
     if (costPrice != null && Number(costPrice) !== product.costPrice) {
@@ -99,6 +125,8 @@ router.patch("/:id", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
         stripPrice: stripPrice != null ? Number(stripPrice) : product.stripPrice,
         boxPrice: boxPrice != null ? Number(boxPrice) : product.boxPrice,
         costPrice: costPrice != null ? Number(costPrice) : product.costPrice,
+        stripsPerBox: stripsPerBox != null ? Number(stripsPerBox) : product.stripsPerBox,
+        tabletsPerStrip: tabletsPerStrip != null ? Number(tabletsPerStrip) : product.tabletsPerStrip,
       },
     });
 

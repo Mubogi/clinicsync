@@ -88,5 +88,6 @@ export function serializeFacility(f) {
     address: f.address,
     phone: f.phone,
     subscriptionTier: f.subscriptionTier,
+    onboarded: f.onboarded ?? true,
   };
 }

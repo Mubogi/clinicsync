@@ -52,6 +52,7 @@ router.post("/facilities", requireAuth, requireAdmin, async (req, res) => {
         slug: slug || null,
         subscriptionTier: tier,
         brandName: brandName || name,
+        onboarded: false, // new clinics go through the first-time setup wizard
         users: {
           create: {
             name: ownerName,

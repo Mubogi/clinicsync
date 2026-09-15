@@ -87,6 +87,79 @@ export default function Reports() {
             </div>
           </div>
 
+          {/* Weekly + monthly trends */}
+          <div className="grid lg:grid-cols-2 gap-4">
+            <div className="bg-white rounded-xl border border-slate-200 p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <TrendingUp size={16} className="text-emerald-600" />
+                <h2 className="font-semibold text-slate-900">Weekly performance</h2>
+              </div>
+              {data.weekly?.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-[11px] uppercase tracking-wide text-slate-400 border-b border-slate-100">
+                        <th className="py-2">Week</th>
+                        <th className="py-2 text-right">Sales</th>
+                        <th className="py-2 text-right">Revenue</th>
+                        <th className="py-2 text-right">Profit</th>
+                        <th className="py-2 text-right">Expenses</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {data.weekly.slice(-8).map((w) => (
+                        <tr key={w.period}>
+                          <td className="py-2 font-medium text-slate-700 font-mono text-xs">{w.period}</td>
+                          <td className="py-2 text-right text-slate-500">{w.transactions}</td>
+                          <td className="py-2 text-right font-mono text-slate-700">{fmtShortMoney(w.revenue)}</td>
+                          <td className="py-2 text-right font-mono text-emerald-600">{fmtShortMoney(w.profit)}</td>
+                          <td className="py-2 text-right font-mono text-slate-500">{fmtShortMoney(w.expenses)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-400 py-4 text-center">No weekly data in range.</div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-xl border border-slate-200 p-5">
+              <div className="flex items-center gap-2 mb-3">
+                <TrendingUp size={16} className="text-emerald-600" />
+                <h2 className="font-semibold text-slate-900">Monthly performance</h2>
+              </div>
+              {data.monthly?.length ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-[11px] uppercase tracking-wide text-slate-400 border-b border-slate-100">
+                        <th className="py-2">Month</th>
+                        <th className="py-2 text-right">Sales</th>
+                        <th className="py-2 text-right">Revenue</th>
+                        <th className="py-2 text-right">Profit</th>
+                        <th className="py-2 text-right">Expenses</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {data.monthly.slice(-6).map((m) => (
+                        <tr key={m.period}>
+                          <td className="py-2 font-medium text-slate-700 font-mono text-xs">{m.period}</td>
+                          <td className="py-2 text-right text-slate-500">{m.transactions}</td>
+                          <td className="py-2 text-right font-mono text-slate-700">{fmtShortMoney(m.revenue)}</td>
+                          <td className="py-2 text-right font-mono text-emerald-600">{fmtShortMoney(m.profit)}</td>
+                          <td className="py-2 text-right font-mono text-slate-500">{fmtShortMoney(m.expenses)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-400 py-4 text-center">No monthly data in range.</div>
+              )}
+            </div>
+          </div>
+
           <div className="grid lg:grid-cols-2 gap-4">
             <div className="bg-white rounded-xl border border-slate-200 p-5">
               <div className="flex items-center gap-2 mb-3">
