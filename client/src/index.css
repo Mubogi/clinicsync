@@ -22,7 +22,24 @@ body {
   color: #0f172a;
 }
 
-/* Receipt print styles */
+/* ===== Print / PDF styles ============================================
+ * These power the "Print" buttons across the app. The browser's
+ * "Save as PDF" produces clean A4 documents thanks to the @page rule,
+ * while the POS receipt narrows itself to 80mm thermal width.
+ * ==================================================================== */
+@page {
+  size: A4;
+  margin: 12mm;
+}
+
+.receipt-mode {
+  width: 76mm;
+  font-family:
+    ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  background: #fff;
+  color: #000;
+}
+
 @media print {
   body * {
     visibility: hidden;
@@ -35,9 +52,111 @@ body {
     position: absolute;
     left: 0;
     top: 0;
-    width: 80mm;
-    padding: 2mm;
+    width: 100%;
+    max-width: 180mm;
+    padding: 6mm;
+    background: #fff;
+    color: #000;
     box-shadow: none;
+    border: none;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  /* Thermal receipt */
+  .print-area.receipt-mode {
+    width: 80mm;
+    max-width: 80mm;
+    padding: 3mm 4mm;
+    font-size: 11px;
+    font-family:
+      ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono",
+      monospace;
+  }
+  .print-area.receipt-mode .text-lg {
+    font-size: 16px;
+  }
+  .print-area.receipt-mode .text-xl {
+    font-size: 18px;
+  }
+  .print-area.receipt-mode .text-2xl {
+    font-size: 20px;
+  }
+  /* Sheets (balance sheet / reports) */
+  .print-area.sheet-mode {
+    width: 100%;
+    max-width: 190mm;
+    padding: 10mm 12mm;
+    font-size: 12px;
+    font-family:
+      ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+  }
+  .print-area.sheet-mode h1,
+  .print-area.sheet-mode .h1 {
+    font-size: 22px;
+  }
+  .print-area.sheet-mode h2,
+  .print-area.sheet-mode .h2 {
+    font-size: 16px;
+  }
+  .print-area .print-brand {
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+  }
+  .print-area .print-wordmark {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    color: #475569;
+  }
+  .print-area .print-thin {
+    font-weight: 300;
+    color: #334155;
+  }
+  .print-area .print-muted {
+    color: #64748b;
+    font-weight: 400;
+  }
+  .print-area .print-rule {
+    border-top: 1.5px dotted #64748b;
+    margin: 6px 0;
+  }
+  .print-area .print-rule-solid {
+    border-top: 2px solid #1e293b;
+    margin: 6px 0;
+  }
+  .print-area table.print-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .print-area.receipt-mode table.print-table {
+    font-size: 10.5px;
+  }
+  .print-area table.print-table th {
+    text-align: left;
+    font-weight: 700;
+    border-bottom: 1px dotted #94a3b8;
+    padding: 3px 0;
+  }
+  .print-area table.print-table td {
+    padding: 3px 0;
+    vertical-align: top;
+  }
+  .print-area table.print-table td.num,
+  .print-area table.print-table th.num {
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  .print-area .mono {
+    font-variant-numeric: tabular-nums;
+  }
+  .print-area .avoid-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
   .no-print {
     display: none !important;

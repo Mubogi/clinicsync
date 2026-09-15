@@ -4,7 +4,7 @@ import { apiFetch } from "../lib/api.js";
 import { salesDb, inventoryDb } from "../lib/db.js";
 import { runSync } from "../lib/sync.js";
 import { saveDoc } from "../lib/db.js";
-import { fmtMoney, fmtDate, fmtTime, unitLabel, productUnits } from "../lib/utils.js";
+import { fmtMoney, fmtShortMoney, fmtDate, fmtTime, unitLabel, productUnits } from "../lib/utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 const QUICK_ADDS = ["Paracetamol 500mg", "Amoxicillin 250mg", "Metronidazole 400mg"];
@@ -448,34 +448,100 @@ export default function Pos() {
       {receipt && (
         <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full">
-            <div ref={printRef} className="print-area p-5">
-              <div className="text-center border-b border-dashed border-slate-300 pb-3">
-                <div className="text-lg font-bold text-slate-900">{session?.facility?.brandName || session?.facility?.name}</div>
-                <div className="text-xs text-slate-500">Jordan Design Hub · Uganda</div>
-                <div className="text-xs text-slate-500 mt-1">Receipt #{receipt.receiptNumber}</div>
-                <div className="text-[11px] text-slate-500 mt-0.5">Cashier: {receipt.cashierName || session?.user?.name || "—"}</div>
-              </div>
-              <div className="flex items-center justify-between text-xs text-slate-600 py-2 border-b border-dashed border-slate-200">
-                <span>{fmtDate(receipt.createdAt)} {fmtTime(receipt.createdAt)}</span>
-                <span>{receipt.paymentMethod}{receipt.momoNetwork ? ` · ${receipt.momoNetwork}` : ""}</span>
-              </div>
-              <div className="py-2">
-                {(receipt.items || []).map((it, i) => (
-                  <div key={i} className="flex items-start justify-between text-sm py-1">
-                    <div className="flex-1 pr-2">
-                      <div className="text-slate-800">{it.drugName} {it.unitType ? <span className="text-[10px] text-slate-400">({unitLabel(it.unitType)})</span> : null}</div>
-                      <div className="text-[11px] text-slate-400">{it.quantity} × {fmtMoney(it.unitPrice)}</div>
-                    </div>
-                    <div className="font-mono text-slate-700">{fmtMoney(it.totalPrice)}</div>
+            <div ref={printRef} className="print-area receipt-mode p-5">
+              {/* Brand header */}
+              <div className="text-center">
+                <div className="text-lg font-bold text-slate-900">{session?.facility?.logoEmoji ? `${session?.facility?.logoEmoji} ` : ""}{session?.facility?.brandName || session?.facility?.name}</div>
+                {session?.facility?.tagline && (
+                  <div className="text-[11px] text-slate-500">{session?.facility?.tagline}</div>
+                )}
+                {(session?.facility?.address || session?.facility?.phone) && (
+                  <div className="text-[10px] text-slate-400 mt-0.5">
+                    {[session?.facility?.address, session?.facility?.phone].filter(Boolean).join(" · ")}
                   </div>
-                ))}
+                )}
               </div>
-              <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-2 text-sm">
-                <span className="font-semibold text-slate-900">TOTAL</span>
-                <span className="font-bold text-slate-900">{fmtMoney(receipt.totalAmount)}</span>
+              <div className="print-rule" />
+              <div className="text-center">
+                <div className="print-wordmark text-[11px] font-bold tracking-[0.3em] text-slate-600">Receipt</div>
               </div>
-              <div className="text-center text-xs text-slate-400 mt-3">
-                Thank you! Come back soon 🙏
+              <div className="text-[11px] text-slate-600 mt-1 space-y-0.5">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Receipt no.</span>
+                  <span className="font-mono font-semibold text-slate-800">#{receipt.receiptNumber}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Date</span>
+                  <span>{fmtDate(receipt.createdAt)} {fmtTime(receipt.createdAt)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Cashier</span>
+                  <span>{receipt.cashierName || session?.user?.name || "—"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Payment</span>
+                  <span className="font-semibold">{receipt.paymentMethod}{receipt.momoNetwork ? ` · ${receipt.momoNetwork}` : ""}</span>
+                </div>
+              </div>
+              <div className="print-rule" />
+
+              {/* Items table */}
+              <table className="print-table mt-1">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th className="num">Qty</th>
+                    <th className="num">Price</th>
+                    <th className="num">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(receipt.items || []).map((it, i) => (
+                    <tr key={i}>
+                      <td>
+                        <span className="text-slate-900 font-medium">{it.drugName}</span>
+                        {it.unitType ? (
+                          <div className="text-[9px] text-slate-400 uppercase tracking-wide">{unitLabel(it.unitType)}</div>
+                        ) : null}
+                      </td>
+                      <td className="num text-slate-700">{it.quantity}</td>
+                      <td className="num text-slate-700">{fmtShortMoney(it.unitPrice)}</td>
+                      <td className="num text-slate-900 font-semibold">{fmtShortMoney(it.totalPrice)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="print-rule" />
+
+              {/* Totals */}
+              <div className="space-y-1 text-[11px]">
+                <div className="flex justify-between text-slate-600">
+                  <span>Subtotal</span>
+                  <span className="mono">{fmtShortMoney(receipt.totalAmount)}</span>
+                </div>
+                {receipt.paymentMethod === "CASH" && receipt.cashPaid > 0 && (
+                  <>
+                    <div className="flex justify-between text-slate-600">
+                      <span>Cash tendered</span>
+                      <span className="mono">{fmtShortMoney(receipt.cashPaid)}</span>
+                    </div>
+                    <div className="flex justify-between text-slate-600">
+                      <span>Change</span>
+                      <span className="mono">{fmtShortMoney(receipt.cashPaid - receipt.totalAmount)}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+              <div className="print-rule-solid" />
+              <div className="flex justify-between items-center">
+                <span className="text-sm font-bold text-slate-900">TOTAL</span>
+                <span className="text-base font-extrabold text-slate-900 mono">{fmtShortMoney(receipt.totalAmount)}</span>
+              </div>
+              <div className="print-rule" />
+
+              <div className="text-center text-[11px] text-slate-500 mt-2">
+                <div>Thank you! Come back soon 🙏</div>
+                <div className="text-[9px] text-slate-400 mt-0.5">clinic-sync · offline-first · Uganda</div>
               </div>
             </div>
             <div className="flex gap-2 p-4 no-print">

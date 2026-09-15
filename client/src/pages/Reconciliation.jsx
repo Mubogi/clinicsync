@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Lock, CalendarDays, Printer } from "lucide-react";
 import { apiFetch } from "../lib/api.js";
-import { fmtMoney, fmtDate, todayKey } from "../lib/utils.js";
+import { fmtMoney, fmtShortMoney, fmtDate, todayKey } from "../lib/utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 export default function Reconciliation() {
@@ -58,16 +58,6 @@ export default function Reconciliation() {
     window.print();
   }
 
-  const rows = summary
-    ? [
-        { label: "Gross revenue (all sales)", value: summary.totalRevenue },
-        { label: "  · Cash received", value: summary.totalRevenue - summary.momoBalance },
-        { label: "  · Mobile money (MTN)", value: summary.momoMtn },
-        { label: "  · Mobile money (Airtel)", value: summary.momoAirtel },
-        { label: "Total expenses", value: -summary.totalExpenses },
-        { label: "  · Drugs bought (restock)", value: summary.drugsBoughtTotal },
-      ]
-    : [];
   const expectedCash = summary
     ? summary.totalRevenue - summary.momoBalance - summary.totalExpenses + summary.drugsBoughtTotal
     : 0;
@@ -95,40 +85,101 @@ export default function Reconciliation() {
       )}
 
       <div className="grid lg:grid-cols-2 gap-5 items-start">
-        <div className="bg-white rounded-xl border border-slate-200 p-6 print-area">
-          <div className="text-center border-b border-dashed border-slate-300 pb-3 mb-4">
-            <div className="text-lg font-bold text-slate-900">{session?.facility?.name}</div>
-            <div className="text-xs text-slate-500">Daily balance sheet · {fmtDate(date)}</div>
-            <div className="text-xs text-slate-400 mt-0.5">ClinicSync · Offline-first</div>
+        <div className="bg-white rounded-xl border border-slate-200 p-6 print-area sheet-mode">
+          {/* Branded header */}
+          <div className="border-b-2 border-slate-900 pb-3 mb-4">
+            <div className="flex items-end justify-between">
+              <div>
+                <div className="text-xl font-extrabold text-slate-900">{session?.facility?.logoEmoji ? `${session?.facility?.logoEmoji} ` : ""}{session?.facility?.brandName || session?.facility?.name}</div>
+                {session?.facility?.tagline && (
+                  <div className="text-[11px] text-slate-500">{session?.facility?.tagline}</div>
+                )}
+              </div>
+              <div className="print-wordmark text-right">Daily Balance Sheet</div>
+            </div>
+            <div className="flex justify-between text-[11px] text-slate-500 mt-2">
+              <span>{[session?.facility?.address, session?.facility?.phone].filter(Boolean).join(" · ")}</span>
+              <span className="mono">{fmtDate(date)}</span>
+            </div>
           </div>
 
           {summary ? (
             <>
-              <div className="space-y-2">
-                {rows.map((r, i) => (
-                  <div key={i} className="flex items-center justify-between text-sm">
-                    <span className={r.label.startsWith("  ·") ? "pl-4 text-slate-500" : "text-slate-700 font-medium"}>
-                      {r.label}
-                    </span>
-                    <span className="font-mono text-slate-700">{fmtMoney(r.value)}</span>
+              {/* Revenue section */}
+              <div className="avoid-break">
+                <div className="text-[10px] font-bold tracking-[0.2em] text-slate-500 uppercase mb-1">Revenue</div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium text-slate-800">Gross revenue (all sales)</span>
+                    <span className="font-mono font-semibold text-slate-900">{fmtMoney(summary.totalRevenue)}</span>
                   </div>
-                ))}
-              </div>
-              <div className="mt-4 pt-3 border-t-2 border-slate-200">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-bold text-slate-900">Expected cash at hand</span>
-                  <span className="text-xl font-bold text-emerald-600">{fmtMoney(expectedCash)}</span>
-                </div>
-                <div className="text-[11px] text-slate-400 mt-1 text-right">
-                  cash − expenses + drugs bought
-                </div>
-                <div className="mt-3 flex items-center justify-between text-sm">
-                  <span className="text-slate-600">Transactions</span>
-                  <span className="font-mono text-slate-700">{summary.salesCount}</span>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="pl-4 text-slate-500">· Cash received</span>
+                    <span className="font-mono text-slate-700">{fmtMoney(summary.totalRevenue - summary.momoBalance)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="pl-4 text-slate-500">· Mobile money (MTN)</span>
+                    <span className="font-mono text-slate-700">{fmtMoney(summary.momoMtn)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="pl-4 text-slate-500">· Mobile money (Airtel)</span>
+                    <span className="font-mono text-slate-700">{fmtMoney(summary.momoAirtel)}</span>
+                  </div>
                 </div>
               </div>
 
-              <div className="mt-4 flex gap-2 no-print">
+              {/* Expenses section */}
+              <div className="avoid-break mt-4">
+                <div className="text-[10px] font-bold tracking-[0.2em] text-slate-500 uppercase mb-1">Expenses</div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium text-slate-800">Total expenses</span>
+                    <span className="font-mono text-slate-700">{fmtMoney(summary.totalExpenses)}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="pl-4 text-slate-500">· Drugs bought (restock)</span>
+                    <span className="font-mono text-slate-700">{fmtMoney(summary.drugsBoughtTotal)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="print-rule-solid my-4" />
+
+              {/* Summary / Expected cash */}
+              <div className="avoid-break">
+                <div className="flex items-baseline justify-between">
+                  <span className="text-sm font-bold text-slate-900">Expected cash at hand</span>
+                  <span className="text-2xl font-extrabold text-slate-900 mono">{fmtShortMoney(expectedCash)}</span>
+                </div>
+                <div className="text-[10px] text-slate-400 mt-0.5 text-right">
+                  cash received − expenses + drugs bought
+                </div>
+                <div className="flex justify-between text-xs text-slate-600 mt-2 pt-2 border-t border-dotted border-slate-300">
+                  <span>Transactions</span>
+                  <span className="mono font-semibold">{summary.salesCount}</span>
+                  <span>{summary.isClosed ? "· Locked" : "· Open"}</span>
+                </div>
+              </div>
+
+              {/* Signature lines */}
+              <div className="avoid-break mt-8 grid grid-cols-2 gap-8">
+                <div>
+                  <div className="border-t border-slate-400 pt-1 text-[10px] text-slate-500">
+                    Cashier / Attendant signature
+                  </div>
+                </div>
+                <div>
+                  <div className="border-t border-slate-400 pt-1 text-[10px] text-slate-500">
+                    Owner / Manager signature
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-6 text-center text-[10px] text-slate-400">
+                ClinicSync · offline-first · Uganda
+              </div>
+
+              <div className="mt-6 flex gap-2 no-print">
                 <button
                   onClick={lockShift}
                   disabled={loading || summary.isClosed}
