@@ -64,8 +64,8 @@ async function handleJoin(req, res) {
       prisma.facility.findUnique({ where: { id: inv.facilityId }, include: { users: true } }),
       prisma.user.count({ where: { facilityId: inv.facilityId, active: true } }),
     ]);
-    const { getTier } = await import("../plans.js");
-    const tier = getTier(facility?.subscriptionTier);
+    const { getEffectiveTier } = await import("../plans.js");
+    const tier = getEffectiveTier(facility);
     if (activeCount >= tier.maxUsers) {
       return res.status(403).json({
         error: `This pharmacy has reached its ${tier.label} plan limit (${tier.maxUsers} users). The owner needs to upgrade to add more staff.`,

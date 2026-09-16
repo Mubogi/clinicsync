@@ -81,6 +81,61 @@ export function getTier(key) {
   return TIERS[key] || TIERS.BASIC;
 }
 
+// Grace window after subscriptionEndsAt before the plan actually drops to
+// BASIC. Without it a clinic whose renewal payment clears a day late loses
+// staff seats and reports mid-shift; with a short grace they keep working while
+// the admin confirms the payment.
+export const GRACE_DAYS = 3;
+
+// Resolve the tier a facility is *entitled* to right now, applying expiry.
+//
+// The stored `subscriptionTier` is what the admin granted; this reconciles it
+// against the paid period and the suspended flag. Callers must use this rather
+// than reading facility.subscriptionTier directly, otherwise an expired
+// subscription keeps its paid features forever.
+export function getEffectiveTier(facility) {
+  if (!facility) return { ...TIERS.BASIC, storedTier: "BASIC", expired: false, suspended: false };
+
+  const storedTier = facility.subscriptionTier || "BASIC";
+
+  // BASIC has no paid period, so it is never "expired".
+  if (storedTier === "BASIC") {
+    return {
+      ...TIERS.BASIC,
+      storedTier,
+      expired: false,
+      suspended: !!facility.suspended,
+      active: !facility.suspended,
+    };
+  }
+
+  const endsAt = facility.subscriptionEndsAt ? new Date(facility.subscriptionEndsAt) : null;
+  const graceMs = GRACE_DAYS * 24 * 60 * 60 * 1000;
+  const expired = !!endsAt && Date.now() > endsAt.getTime() + graceMs;
+
+  if (facility.suspended || expired) {
+    // Downgrade what the clinic can *do*, but keep the paid tier stored so a
+    // renewal restores it without the admin re-picking the plan.
+    return {
+      ...TIERS.BASIC,
+      storedTier,
+      expired,
+      suspended: !!facility.suspended,
+      active: false,
+      lapsedTier: storedTier,
+    };
+  }
+
+  return { ...TIERS[storedTier], storedTier, expired: false, suspended: false, active: true };
+}
+
+// Remaining days in the paid period (null for BASIC / no expiry set).
+export function daysRemaining(facility) {
+  if (!facility?.subscriptionEndsAt) return null;
+  const ms = new Date(facility.subscriptionEndsAt).getTime() - Date.now();
+  return Math.ceil(ms / (24 * 60 * 60 * 1000));
+}
+
 // Check if a facility can add another user under its current plan.
 export function userSlotsUsed(userCount) {
   // userCount = total users including owner

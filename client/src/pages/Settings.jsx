@@ -692,14 +692,31 @@ export default function Settings() {
                       <li className="text-[10px] text-slate-400 pt-1 italic">Missing: {v.whatsMissing.join(" · ")}</li>
                     )}
                   </ul>
-                  {!isCurrent && (
+                  {!isCurrent && k !== "BASIC" && (
+                    <div className="mt-3">
+                      <a
+                        href={`https://wa.me/256754687597?text=${encodeURIComponent(
+                          `Hello ClinicSync, I would like to upgrade ${session?.facility?.brandName || "my clinic"} to the ${v.label} plan.`
+                        )}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="w-full flex items-center justify-center gap-1.5 text-white text-sm font-medium py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700"
+                      >
+                        <MessageCircle size={14} /> Request upgrade
+                      </a>
+                      <p className="text-[10px] text-slate-400 mt-1.5 text-center">
+                        Activated after payment is confirmed
+                      </p>
+                    </div>
+                  )}
+                  {!isCurrent && k === "BASIC" && (
                     <button
                       onClick={async () => {
                         try {
                           setBusy(true);
                           const updated = await apiFetch("/auth/facility/tier", {
                             method: "PATCH",
-                            body: JSON.stringify({ subscriptionTier: k }),
+                            body: JSON.stringify({ subscriptionTier: "BASIC" }),
                           });
                           session.facility = updated;
                           window.localStorage.setItem(
@@ -707,7 +724,7 @@ export default function Settings() {
                             JSON.stringify({ user: session.user, facility: updated })
                           );
                           window.dispatchEvent(new Event("clinicSync:facility-updated"));
-                          flash(true, `Switched to ${v.label} plan.`);
+                          flash(true, "Switched to the Basic plan.");
                           loadUsers();
                         } catch (e) {
                           flash(false, e.message);
@@ -715,12 +732,10 @@ export default function Settings() {
                           setBusy(false);
                         }
                       }}
-                      className={`mt-3 w-full text-white text-sm font-medium py-2 rounded-lg ${
-                        v.popular ? "bg-amber-500 hover:bg-amber-600" : "bg-emerald-600 hover:bg-emerald-700"
-                      } disabled:opacity-50`}
+                      className="mt-3 w-full text-sm font-medium py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                       disabled={busy}
                     >
-                      {k === "BASIC" ? "Downgrade" : "Upgrade"}
+                      Downgrade to Basic
                     </button>
                   )}
                   {isCurrent && (

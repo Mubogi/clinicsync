@@ -36,7 +36,7 @@ export default function Setup() {
     address: session?.facility?.address || "",
     phone: session?.facility?.phone || "",
   });
-  const [tier, setTier] = useState("PREMIUM");
+  const [tier, setTier] = useState("BASIC");
 
   // Selected stock items (from library)
   const [selected, setSelected] = useState([]);
@@ -206,30 +206,44 @@ export default function Setup() {
           {step === 2 && (
             <div className="space-y-4">
               <h2 className="font-bold text-slate-900 text-lg">Choose a plan</h2>
-              <p className="text-sm text-slate-500 -mt-2">You can change this anytime in Settings.</p>
+              <p className="text-sm text-slate-500 -mt-2">
+                Start free on Basic. Paid plans are activated by ClinicSync once payment is
+                confirmed — request one from Settings whenever you're ready.
+              </p>
               <div className="grid sm:grid-cols-3 gap-3">
-                {Object.entries(TIERS).map(([k, v]) => (
-                  <button
-                    key={k}
-                    onClick={() => setTier(k)}
-                    className={`text-left border rounded-xl p-4 transition-colors relative ${
-                      tier === k ? "border-emerald-500 bg-emerald-50 ring-2 ring-emerald-100" : "border-slate-200 hover:border-emerald-300"
-                    }`}
-                  >
-                    {v.popular && (
-                      <span className="absolute -top-2 right-3 text-[9px] font-bold bg-amber-400 text-amber-900 px-2 py-0.5 rounded-full uppercase">Popular</span>
-                    )}
-                    <div className="font-bold" style={{ color: v.color }}>{v.label}</div>
-                    <div className="text-[11px] text-slate-500 mt-0.5">{v.priceUgx === 0 ? "Free" : `${fmtMoney(v.priceUgx)}/mo`}</div>
-                    <ul className="mt-2 space-y-1">
-                      {v.features.slice(0, 4).map((f) => (
-                        <li key={f} className="text-[11px] text-slate-600 flex items-start gap-1.5">
-                          <Check size={12} className="text-emerald-500 mt-0.5 shrink-0" /> {f}
-                        </li>
-                      ))}
-                    </ul>
-                  </button>
-                ))}
+                {Object.entries(TIERS).map(([k, v]) => {
+                  const paid = k !== "BASIC";
+                  return (
+                    <button
+                      key={k}
+                      onClick={() => !paid && setTier(k)}
+                      disabled={paid}
+                      className={`text-left border rounded-xl p-4 transition-colors relative ${
+                        paid
+                          ? "border-slate-200 opacity-60 cursor-not-allowed"
+                          : tier === k
+                            ? "border-emerald-500 bg-emerald-50 ring-2 ring-emerald-100"
+                            : "border-slate-200 hover:border-emerald-300"
+                      }`}
+                    >
+                      {v.popular && (
+                        <span className="absolute -top-2 right-3 text-[9px] font-bold bg-amber-400 text-amber-900 px-2 py-0.5 rounded-full uppercase">Popular</span>
+                      )}
+                      <div className="font-bold" style={{ color: v.color }}>{v.label}</div>
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        {v.priceUgx === 0 ? "Free" : `${fmtMoney(v.priceUgx)}/mo`}
+                        {paid && " · request after setup"}
+                      </div>
+                      <ul className="mt-2 space-y-1">
+                        {v.features.slice(0, 4).map((f) => (
+                          <li key={f} className="text-[11px] text-slate-600 flex items-start gap-1.5">
+                            <Check size={12} className="text-emerald-500 mt-0.5 shrink-0" /> {f}
+                          </li>
+                        ))}
+                      </ul>
+                    </button>
+                  );
+                })}
               </div>
               <div className="flex gap-2">
                 <button onClick={() => setStep(1)} className="border border-slate-300 text-slate-600 hover:bg-slate-50 font-medium px-5 py-2.5 rounded-lg">Back</button>

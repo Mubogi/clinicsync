@@ -1,6 +1,7 @@
 import jwt from "jsonwebtoken";
 import crypto from "node:crypto";
-import { JWT_SECRET } from "./config.js";
+import { JWT_SECRET, SYS_ADMIN_IDS } from "./config.js";
+import { getEffectiveTier } from "./plans.js";
 import { prisma } from "./db.js";
 
 export function signToken(user) {
@@ -70,7 +71,14 @@ export function requireAuth(req, res, next) {
   prisma.user
     .findUnique({
       where: { id: payload.sub },
-      select: { id: true, active: true, role: true, facilityId: true, name: true },
+      select: {
+        id: true,
+        active: true,
+        role: true,
+        facilityId: true,
+        name: true,
+        facility: { select: { suspended: true, suspendedReason: true } },
+      },
     })
     .then((user) => {
       if (!user || !user.active) {
@@ -78,6 +86,17 @@ export function requireAuth(req, res, next) {
       }
       if (user.facilityId !== payload.facilityId) {
         return res.status(401).json({ error: "Session is no longer valid" });
+      }
+      // A suspended clinic keeps its data but loses access immediately.
+      // Platform admins are exempt: the operator usually belongs to a clinic
+      // of their own, and blocking them would lock them out of the very console
+      // needed to lift the suspension.
+      if (user.facility?.suspended && !SYS_ADMIN_IDS.includes(user.id)) {
+        return res.status(403).json({
+          error:
+            user.facility.suspendedReason ||
+            "This clinic's account is suspended. Please contact ClinicSync support.",
+        });
       }
       req.user = {
         sub: user.id,
@@ -99,8 +118,14 @@ export function requireRole(...roles) {
   };
 }
 
-// Helper to serialize a facility for client
+// Helper to serialize a facility for client.
+//
+// `subscriptionTier` reports the tier the client should actually gate on
+// (post-expiry), while `storedTier` preserves what was granted — mirroring the
+// server-side getEffectiveTier() so the UI never offers a feature the API will
+// reject.
 export function serializeFacility(f) {
+  const effective = getEffectiveTier(f);
   return {
     id: f.id,
     name: f.name,
@@ -110,7 +135,11 @@ export function serializeFacility(f) {
     logoEmoji: f.logoEmoji,
     address: f.address,
     phone: f.phone,
-    subscriptionTier: f.subscriptionTier,
+    subscriptionTier: effective.key,
+    storedTier: effective.storedTier,
+    subscriptionEndsAt: f.subscriptionEndsAt || null,
+    subscriptionExpired: !!effective.expired,
+    suspended: !!f.suspended,
     onboarded: f.onboarded ?? true,
   };
 }

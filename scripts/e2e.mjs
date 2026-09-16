@@ -153,11 +153,41 @@ async function main() {
   r = await req("GET", "/auth/users", { token: T.owner });
   ok("users list with plan limits", r.status === 200 && r.data.plan && typeof r.data.plan.maxUsers === "number", r.status);
   r = await req("PATCH", "/auth/facility/tier", { token: T.owner, body: { subscriptionTier: "BASIC" } });
-  ok("owner can set tier", r.status === 200 && r.data.subscriptionTier === "BASIC", r.status);
+  ok("owner can downgrade to BASIC", r.status === 200 && r.data.subscriptionTier === "BASIC", r.status);
   r = await req("PATCH", "/auth/facility/tier", { token: T.cashier, body: { subscriptionTier: "PRO" } });
   ok("non-owner cannot set tier", r.status === 403, r.status);
+
+  // Paywall: an owner must NOT be able to grant themselves a paid plan.
   r = await req("PATCH", "/auth/facility/tier", { token: T.owner, body: { subscriptionTier: "PRO" } });
-  ok("owner restores multi-seat tier", r.status === 200 && r.data.subscriptionTier === "PRO", r.status);
+  ok("owner cannot self-upgrade to a paid tier", r.status === 403, r.status);
+
+  // The platform admin is the only way to activate a paid plan. The seeded
+  // owner is also the configured SYS_ADMIN_IDS entry in tests.
+  const facilityId = T.facilityId || (await req("GET", "/auth/me", { token: T.owner })).data?.facility?.id;
+  r = await req("POST", `/admin/facilities/${facilityId}/subscription`, {
+    token: T.owner,
+    body: { tier: "PRO", months: 1, amountUgx: 75000, note: "e2e" },
+  });
+  ok("admin activates paid tier for a time frame", r.status === 200 && r.data.facility.subscriptionTier === "PRO" && !!r.data.subscriptionEndsAt, r);
+
+  // Renewing early must extend, not replace, the period already paid for.
+  const firstEnd = new Date(r.data.subscriptionEndsAt).getTime();
+  r = await req("POST", `/admin/facilities/${facilityId}/subscription`, {
+    token: T.owner,
+    body: { tier: "PRO", months: 1, amountUgx: 75000 },
+  });
+  const secondEnd = new Date(r.data.subscriptionEndsAt).getTime();
+  ok("renewal extends the existing period", secondEnd > firstEnd, { firstEnd, secondEnd });
+
+  r = await req("GET", `/admin/facilities/${facilityId}/payments`, { token: T.owner });
+  ok("payment history is recorded", r.status === 200 && r.data.payments.length >= 2, r.status);
+
+  r = await req("GET", "/admin/overview", { token: T.owner });
+  ok("admin overview reports MRR", r.status === 200 && typeof r.data.mrrUgx === "number", r.status);
+
+  // A clinic that is not a platform admin must not reach the admin API.
+  r = await req("GET", "/admin/facilities", { token: T.cashier });
+  ok("non-admin cannot list all clinics", r.status === 403, r.status);
 
   console.log("\n== invites / QR join ==");
   r = await req("POST", "/team/invites", { token: T.owner, body: { role: "CASHIER" } });

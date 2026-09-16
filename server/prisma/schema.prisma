@@ -31,6 +31,14 @@ model Facility {
   // medicine library pick). Set true on first login through the setup flow.
   onboarded        Boolean               @default(false)
   inviteCode       String?               @unique // staff join link token (owner-generated)
+  // ---- Subscription lifecycle (managed from the platform admin panel) ----
+  // When the current paid period ends. Past this date the facility is treated
+  // as BASIC by getEffectiveTier(), without the stored tier being rewritten, so
+  // renewing restores the plan exactly as it was.
+  subscriptionEndsAt DateTime?
+  // Manual switch to cut a clinic off (non-payment, abuse) without deleting it.
+  suspended        Boolean               @default(false)
+  suspendedReason  String?
   createdAt        DateTime              @default(now())
   updatedAt        DateTime              @updatedAt
   users            User[]
@@ -45,6 +53,23 @@ model Facility {
   invites          FacilityInvite[]
   deleteRequests   DeleteRequest[]
   backups          Backup[]
+  payments         Payment[]
+}
+
+// Audit trail of plan activations/extensions, so a clinic's billing history is
+// reconstructable when they dispute what they paid for.
+model Payment {
+  id         String   @id @default(uuid())
+  facilityId String
+  facility   Facility @relation(fields: [facilityId], references: [id])
+  tier       SubscriptionTier
+  months     Int
+  amountUgx  Int      @default(0)
+  note       String?
+  periodStart DateTime
+  periodEnd  DateTime
+  createdAt  DateTime @default(now())
+  recordedBy String? // admin user id / label
 }
 
 // Remember-me persistent sessions (per user+facility, auto-expire)

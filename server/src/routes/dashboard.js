@@ -1,7 +1,7 @@
 import { Router } from "express";
 
 import { prisma } from "../db.js";
-import { getTier } from "../plans.js";
+import { getEffectiveTier, daysRemaining } from "../plans.js";
 import { serverError } from "../http.js";
 
 const router = Router();
@@ -108,7 +108,7 @@ router.get("/", async (req, res) => {
       .filter((i) => i.expiryDate && i.expiryDate < new Date(Date.now() + 30 * DAY) && i.quantity > 0)
       .sort((a, b) => new Date(a.expiryDate) - new Date(b.expiryDate));
 
-    const tierInfo = getTier(facility?.subscriptionTier);
+    const tierInfo = getEffectiveTier(facility);
 
     // ---- Weekly + monthly transaction/revenue reports ----
     const weekKey = (d) => {
@@ -177,11 +177,17 @@ router.get("/", async (req, res) => {
       reconciliation,
       inventoryValue: inventory.reduce((s, i) => s + i.quantity * i.costPrice, 0),
       tier: {
-        key: facility?.subscriptionTier || "BASIC",
+        key: tierInfo?.key || "BASIC",
         label: tierInfo?.label,
         maxUsers: tierInfo?.maxUsers,
         usersUsed: users.length,
         autoSync: tierInfo?.autoSync,
+        // Surface billing state so the app can warn before a plan lapses
+        // instead of the owner discovering it when features vanish.
+        storedTier: tierInfo?.storedTier,
+        expired: !!tierInfo?.expired,
+        suspended: !!tierInfo?.suspended,
+        daysRemaining: daysRemaining(facility),
       },
     });
   } catch (err) {

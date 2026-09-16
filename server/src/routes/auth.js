@@ -12,7 +12,7 @@ import {
   revokeAllRememberTokens,
   serializeFacility,
 } from "../auth.js";
-import { TIERS, getTier } from "../plans.js";
+import { TIERS, getEffectiveTier, daysRemaining } from "../plans.js";
 import { serverError, cleanString } from "../http.js";
 
 const router = Router();
@@ -187,13 +187,18 @@ router.get("/users", requireAuth, async (req, res) => {
       }),
       prisma.facility.findUnique({ where: { id: req.user.facilityId } }),
     ]);
-    const tier = getTier(facility?.subscriptionTier);
+    const tier = getEffectiveTier(facility);
     res.json({
       users,
       plan: {
-        tier: facility?.subscriptionTier,
+        tier: tier.key,
+        storedTier: tier.storedTier,
         maxUsers: tier?.maxUsers,
         used: users.length,
+        expired: !!tier.expired,
+        suspended: !!tier.suspended,
+        subscriptionEndsAt: facility?.subscriptionEndsAt || null,
+        daysRemaining: daysRemaining(facility),
       },
     });
   } catch (err) {
@@ -219,7 +224,7 @@ router.post("/users", requireAuth, requireRole("OWNER"), async (req, res) => {
       where: { id: req.user.facilityId },
       include: { users: true },
     });
-    const tier = getTier(facility?.subscriptionTier);
+    const tier = getEffectiveTier(facility);
     const activeCount = facility.users.filter((u) => u.active).length;
     if (activeCount >= tier.maxUsers) {
       return res.status(403).json({
@@ -312,13 +317,26 @@ router.patch("/facility/branding", requireAuth, requireRole("OWNER"), async (req
   }
 });
 
-// Owner updates tier
+// Owner changes tier.
+//
+// Owners may only DROP to BASIC. Upgrades are granted by a platform admin after
+// payment, never self-service: this route used to write any tier the caller
+// asked for, so every owner could upgrade themselves to PRO for free and the
+// subscription revenue could never be collected.
 router.patch("/facility/tier", requireAuth, requireRole("OWNER"), async (req, res) => {
   try {
     const { subscriptionTier } = req.body;
     if (!["BASIC", "PREMIUM", "PRO"].includes(subscriptionTier)) {
       return res.status(400).json({ error: "Invalid tier" });
     }
+
+    if (subscriptionTier !== "BASIC") {
+      return res.status(403).json({
+        error:
+          "Upgrades are activated by ClinicSync after payment. Contact us to upgrade your plan.",
+      });
+    }
+
     const facility = await prisma.facility.update({
       where: { id: req.user.facilityId },
       data: { subscriptionTier },
@@ -346,7 +364,9 @@ router.post("/facility/setup", requireAuth, requireRole("OWNER"), async (req, re
       logoEmoji,
       address,
       phone,
-      subscriptionTier,
+      // `subscriptionTier` is deliberately ignored here: the setup wizard is
+      // self-service, so trusting it would let a new clinic grant itself PRO
+      // without paying. The tier comes from the platform admin / billing.
       // selected medicines [{ name, genericName, unitType, quantity, costPrice, sellingPrice, expiryDate ? }]
       initialStock = [],
       skipStock,
@@ -367,7 +387,7 @@ router.post("/facility/setup", requireAuth, requireRole("OWNER"), async (req, re
         logoEmoji: cleanString(logoEmoji, 8) ?? undefined,
         address: cleanString(address, 240) ?? undefined,
         phone: cleanString(phone, 40) ?? undefined,
-        subscriptionTier: subscriptionTier && TIERS[subscriptionTier] ? subscriptionTier : undefined,
+        subscriptionTier: undefined,
         onboarded: true,
       },
     });

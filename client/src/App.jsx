@@ -11,6 +11,7 @@ import Expenses from "./pages/Expenses.jsx";
 import Reconciliation from "./pages/Reconciliation.jsx";
 import Reports from "./pages/Reports.jsx";
 import Settings from "./pages/Settings.jsx";
+import Admin from "./pages/Admin.jsx";
 import Layout from "./components/Layout.jsx";
 
 function Protected({ children }) {
@@ -23,6 +24,16 @@ function Protected({ children }) {
     return <Navigate to="/setup" replace />;
   }
   return <Layout>{children}</Layout>;
+}
+
+// Operator console: deliberately rendered outside the clinic <Layout> because
+// it manages many clinics, not the signed-in user's own. Access is enforced by
+// the server (SYS_ADMIN_IDS); the page itself just renders a notice on 403.
+function AdminRoute() {
+  const { session, ready } = useAuth();
+  if (!ready) return <div className="min-h-screen flex items-center justify-center text-slate-500">Loading…</div>;
+  if (!session) return <Navigate to="/login" replace />;
+  return <Admin />;
 }
 
 export default function App() {
@@ -94,6 +105,7 @@ export default function App() {
           </Protected>
         }
       />
+      <Route path="/admin" element={<AdminRoute />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
