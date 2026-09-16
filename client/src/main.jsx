@@ -7,10 +7,33 @@ import { getSession } from "./lib/api.js";
 import { startSyncLoop } from "./lib/sync.js";
 import "./index.css";
 
-// Register service worker for offline PWA support
+// Register service worker for offline PWA support, with an update flow:
+// when a new build is waiting, activate it and reload once so installed users
+// get the newest version without reinstalling.
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+    navigator.serviceWorker
+      .register("/sw.js")
+      .then((registration) => {
+        registration.update().catch(() => {});
+        registration.addEventListener("updatefound", () => {
+          const installing = registration.installing;
+          if (!installing) return;
+          installing.addEventListener("statechange", () => {
+            if (installing.state === "installed" && navigator.serviceWorker.controller) {
+              installing.postMessage("SKIP_WAITING");
+            }
+          });
+        });
+      })
+      .catch(() => {});
+
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (reloaded) return;
+      reloaded = true;
+      window.location.reload();
+    });
   });
 }
 

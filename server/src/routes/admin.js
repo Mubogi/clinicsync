@@ -4,21 +4,29 @@ import bcrypt from "bcryptjs";
 import { prisma } from "../db.js";
 import { requireAuth, serializeFacility } from "../auth.js";
 import { TIERS } from "../plans.js";
+import { SYS_ADMIN_IDS } from "../config.js";
+import { serverError } from "../http.js";
 
 const router = Router();
 
-// Helper: only the platform/super-admin role may manage other facilities.
-// For the MVP the seeded demo OWNER is treated as admin; a real deployment would
-// gate this behind a dedicated system admin role.
-const requireAdmin = async (req, res, next) => {
-  const user = await prisma.user.findUnique({ where: { id: req.user.sub } });
-  if (!user) return res.status(404).json({ error: "User not found" });
-  // In production this would check req.user.role === "SYS_ADMIN".
-  // For the demo we allow any OWNER to onboard new clinics so the tool is testable.
+// Platform-admin gate for managing *other* clinics. Fails closed: if no
+// SYS_ADMIN_IDS are configured, nobody can list, create, retier or delete
+// facilities they do not belong to. Without this, every facility owner on the
+// server could read and wipe every other pharmacy's data.
+const requireAdmin = (req, res, next) => {
+  if (SYS_ADMIN_IDS.length === 0) {
+    return res.status(403).json({
+      error:
+        "Platform administration is not enabled on this server. Set SYS_ADMIN_IDS to grant it.",
+    });
+  }
+  if (!SYS_ADMIN_IDS.includes(req.user.sub)) {
+    return res.status(403).json({ error: "Platform admin access required" });
+  }
   next();
 };
 
-// List all clinics/pharmacies on the server (multi-tenant overview)
+// List all clinics/pharmacies on the server (platform-admin only)
 router.get("/facilities", requireAuth, requireAdmin, async (_req, res) => {
   try {
     const facilities = await prisma.facility.findMany({
@@ -34,7 +42,7 @@ router.get("/facilities", requireAuth, requireAdmin, async (_req, res) => {
       }))
     );
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -71,7 +79,7 @@ router.post("/facilities", requireAuth, requireAdmin, async (req, res) => {
       owner: { id: fresh.users[0].id, name: fresh.users[0].name, role: fresh.users[0].role },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -88,7 +96,7 @@ router.patch("/facilities/:id/tier", requireAuth, requireAdmin, async (req, res)
     });
     res.json(serializeFacility(facility));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -117,7 +125,7 @@ router.delete("/facilities/:id", requireAuth, requireAdmin, async (req, res) => 
     await prisma.facility.delete({ where: { id } });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 

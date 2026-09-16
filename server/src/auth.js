@@ -58,13 +58,36 @@ export function requireAuth(req, res, next) {
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) return res.status(401).json({ error: "Not authenticated" });
 
+  let payload;
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
-    req.user = payload;
-    next();
+    payload = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
   } catch {
     return res.status(401).json({ error: "Invalid or expired token" });
   }
+
+  // Re-check the account on every request so that deactivating or demoting a
+  // user takes effect immediately instead of after their 30-day token expires.
+  prisma.user
+    .findUnique({
+      where: { id: payload.sub },
+      select: { id: true, active: true, role: true, facilityId: true, name: true },
+    })
+    .then((user) => {
+      if (!user || !user.active) {
+        return res.status(401).json({ error: "Account is no longer active" });
+      }
+      if (user.facilityId !== payload.facilityId) {
+        return res.status(401).json({ error: "Session is no longer valid" });
+      }
+      req.user = {
+        sub: user.id,
+        facilityId: user.facilityId,
+        role: user.role,
+        name: user.name,
+      };
+      next();
+    })
+    .catch(next);
 }
 
 export function requireRole(...roles) {

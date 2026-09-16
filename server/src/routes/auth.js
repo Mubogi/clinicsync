@@ -1,5 +1,6 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
+import rateLimit from "express-rate-limit";
 
 import { prisma } from "../db.js";
 import {
@@ -12,15 +13,37 @@ import {
   serializeFacility,
 } from "../auth.js";
 import { TIERS, getTier } from "../plans.js";
+import { serverError, cleanString } from "../http.js";
 
 const router = Router();
 
+// A 4-digit PIN space is small, so throttle online guessing per IP and per
+// account. Limits are generous enough for a shared shop device with typos.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many login attempts. Please wait 15 minutes and try again." },
+});
+
+const pinChangeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many attempts. Please wait and try again." },
+});
+
 // Login by facility name + PIN (optionally remember-me for persistent login)
-router.post("/login", async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
   try {
     const { facilityName, pinCode, remember } = req.body;
     if (!facilityName || !pinCode) {
       return res.status(400).json({ error: "Facility name and PIN required" });
+    }
+    if (String(pinCode).length > 64 || String(facilityName).length > 200) {
+      return res.status(400).json({ error: "Invalid credentials" });
     }
 
     const facility = await prisma.facility.findFirst({
@@ -28,16 +51,15 @@ router.post("/login", async (req, res) => {
       include: { users: true },
     });
 
-    if (!facility) {
-      return res.status(401).json({ error: "Facility not found" });
-    }
+    // Same message and shape whether the facility or the PIN was wrong, so the
+    // endpoint cannot be used to enumerate which clinics exist.
+    const invalid = () => res.status(401).json({ error: "Invalid facility name or PIN" });
+    if (!facility) return invalid();
 
     const user = facility.users.find(
       (u) => u.active && bcrypt.compareSync(String(pinCode), u.pinCode)
     );
-    if (!user) {
-      return res.status(401).json({ error: "Invalid PIN or user deactivated" });
-    }
+    if (!user) return invalid();
 
     const token = signToken(user);
     let rememberToken = null;
@@ -51,12 +73,12 @@ router.post("/login", async (req, res) => {
       facility: serializeFacility(facility),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Login failed" });
   }
 });
 
 // Remember-me auto-login: exchange a persistent token for a session
-router.post("/remember", async (req, res) => {
+router.post("/remember", loginLimiter, async (req, res) => {
   try {
     const { rememberToken } = req.body;
     const result = await consumeRememberToken(rememberToken);
@@ -69,7 +91,7 @@ router.post("/remember", async (req, res) => {
       facility: serializeFacility(facility),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Could not restore session" });
   }
 });
 
@@ -81,7 +103,7 @@ router.post("/logout", requireAuth, async (req, res) => {
     }
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -94,17 +116,31 @@ router.get("/facilities", async (_req, res) => {
     });
     res.json(facilities);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
+// PIN rules: digits only, 4–8 long. Enforced on every write path so a weak
+// PIN can never be created through any endpoint.
+function pinProblem(pin) {
+  const s = String(pin ?? "");
+  if (!/^\d{4,8}$/.test(s)) return "PIN must be 4 to 8 digits.";
+  if (/^(\d)\1+$/.test(s)) return "PIN cannot be all the same digit.";
+  if (["1234", "0123", "0000", "1111", "12345678", "87654321"].includes(s)) {
+    return "That PIN is too easy to guess. Please choose another.";
+  }
+  return null;
+}
+
 // Change PIN
-router.post("/change-pin", requireAuth, async (req, res) => {
+router.post("/change-pin", requireAuth, pinChangeLimiter, async (req, res) => {
   try {
     const { oldPin, newPin } = req.body;
-    if (!oldPin || !newPin || String(newPin).length < 4) {
-      return res.status(400).json({ error: "oldPin and newPin (>=4 digits) required" });
+    if (!oldPin || !newPin) {
+      return res.status(400).json({ error: "oldPin and newPin required" });
     }
+    const problem = pinProblem(newPin);
+    if (problem) return res.status(400).json({ error: problem });
     const user = await prisma.user.findUnique({ where: { id: req.user.sub } });
     if (!user) return res.status(404).json({ error: "User not found" });
     if (!bcrypt.compareSync(String(oldPin), user.pinCode)) {
@@ -114,9 +150,12 @@ router.post("/change-pin", requireAuth, async (req, res) => {
       where: { id: user.id },
       data: { pinCode: bcrypt.hashSync(String(newPin), 10) },
     });
+    // A changed PIN invalidates existing persistent logins, so an old device
+    // cannot keep using the account after the owner rotates the PIN.
+    await revokeAllRememberTokens(user.id);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -133,7 +172,7 @@ router.get("/me", requireAuth, async (req, res) => {
       facility: serializeFacility(user.facility),
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -158,7 +197,7 @@ router.get("/users", requireAuth, async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -172,6 +211,10 @@ router.post("/users", requireAuth, requireRole("OWNER"), async (req, res) => {
     if (!["OWNER", "PHARMACIST", "CASHIER"].includes(role)) {
       return res.status(400).json({ error: "Invalid role" });
     }
+    const problem = pinProblem(pinCode);
+    if (problem) return res.status(400).json({ error: problem });
+    const cleanName = cleanString(name, 80);
+    if (!cleanName) return res.status(400).json({ error: "name required" });
     const facility = await prisma.facility.findUnique({
       where: { id: req.user.facilityId },
       include: { users: true },
@@ -186,14 +229,14 @@ router.post("/users", requireAuth, requireRole("OWNER"), async (req, res) => {
     const user = await prisma.user.create({
       data: {
         facilityId: req.user.facilityId,
-        name,
+        name: cleanName,
         role,
         pinCode: bcrypt.hashSync(String(pinCode), 10),
       },
     });
     res.status(201).json({ id: user.id, name: user.name, role: user.role });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -207,14 +250,23 @@ router.patch("/users/:id", requireAuth, requireRole("OWNER"), async (req, res) =
     }
     const { name, role, pinCode, active } = req.body;
     const data = {};
-    if (name) data.name = name;
+    if (name) data.name = cleanString(name, 80) || existing.name;
     if (role && ["OWNER", "PHARMACIST", "CASHIER"].includes(role)) data.role = role;
-    if (pinCode) data.pinCode = bcrypt.hashSync(String(pinCode), 10);
+    if (pinCode) {
+      const problem = pinProblem(pinCode);
+      if (problem) return res.status(400).json({ error: problem });
+      data.pinCode = bcrypt.hashSync(String(pinCode), 10);
+    }
     if (typeof active === "boolean") data.active = active;
     const user = await prisma.user.update({ where: { id }, data });
+    // Rotating a PIN or disabling the account must kill existing persistent
+    // logins, otherwise the old device keeps working for up to 30 days.
+    if (data.pinCode || data.active === false) {
+      await revokeAllRememberTokens(id);
+    }
     res.json({ id: user.id, name: user.name, role: user.role, active: user.active });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -236,7 +288,7 @@ router.delete("/users/:id", requireAuth, requireRole("OWNER"), async (req, res) 
     ]);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -256,7 +308,7 @@ router.patch("/facility/branding", requireAuth, requireRole("OWNER"), async (req
     });
     res.json(serializeFacility(facility));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -273,7 +325,7 @@ router.patch("/facility/tier", requireAuth, requireRole("OWNER"), async (req, re
     });
     res.json(serializeFacility(facility));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -300,14 +352,21 @@ router.post("/facility/setup", requireAuth, requireRole("OWNER"), async (req, re
       skipStock,
     } = req.body;
 
+    if (!Array.isArray(initialStock)) {
+      return res.status(400).json({ error: "initialStock must be a list of medicines." });
+    }
+    if (initialStock.length > 500) {
+      return res.status(400).json({ error: "Please select at most 500 medicines during setup." });
+    }
+
     const facility = await prisma.facility.update({
       where: { id: req.user.facilityId },
       data: {
-        brandName: brandName !== undefined ? brandName : undefined,
-        tagline: tagline !== undefined ? tagline : undefined,
-        logoEmoji: logoEmoji !== undefined ? logoEmoji : undefined,
-        address: address !== undefined ? address : undefined,
-        phone: phone !== undefined ? phone : undefined,
+        brandName: cleanString(brandName, 120) ?? undefined,
+        tagline: cleanString(tagline, 160) ?? undefined,
+        logoEmoji: cleanString(logoEmoji, 8) ?? undefined,
+        address: cleanString(address, 240) ?? undefined,
+        phone: cleanString(phone, 40) ?? undefined,
         subscriptionTier: subscriptionTier && TIERS[subscriptionTier] ? subscriptionTier : undefined,
         onboarded: true,
       },
@@ -393,7 +452,7 @@ router.post("/facility/setup", requireAuth, requireRole("OWNER"), async (req, re
       onboarded: true,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 

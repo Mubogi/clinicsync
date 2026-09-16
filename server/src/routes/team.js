@@ -1,14 +1,37 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "node:crypto";
+import rateLimit from "express-rate-limit";
 
 import { prisma } from "../db.js";
 import { requireAuth, requireRole } from "../auth.js";
+import { serverError, cleanString } from "../http.js";
 
 const router = Router();
 
 const randomToken = () => crypto.randomBytes(20).toString("hex");
 const INVITE_DAYS = 14;
+
+// Same PIN policy as the owner-managed user creation flow — an invite link
+// must not become a way to create an account with PIN "1".
+const pinProblem = (pin) => {
+  const s = String(pin ?? "");
+  if (!/^\d{4,8}$/.test(s)) return "PIN must be 4 to 8 digits.";
+  if (/^(\d)\1+$/.test(s)) return "PIN cannot be all the same digit.";
+  if (["1234", "0123", "0000", "1111", "12345678", "87654321"].includes(s)) {
+    return "That PIN is too easy to guess. Please choose another.";
+  }
+  return null;
+};
+
+// Public endpoint, so throttle invite guessing and account-creation spam.
+const joinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many attempts. Please wait a few minutes and try again." },
+});
 
 // Shared join handler — the app exposes this at /api/team/join (public, no auth)
 async function handleJoin(req, res) {
@@ -16,6 +39,13 @@ async function handleJoin(req, res) {
     const { invite, name, pinCode } = req.body;
     if (!invite || !name || !pinCode) {
       return res.status(400).json({ error: "invite, name and pinCode required" });
+    }
+    const problem = pinProblem(pinCode);
+    if (problem) return res.status(400).json({ error: problem });
+    const cleanName = cleanString(name, 80);
+    if (!cleanName) return res.status(400).json({ error: "name required" });
+    if (String(invite).length > 128) {
+      return res.status(400).json({ error: "Invite code is not valid." });
     }
     const inv = await prisma.facilityInvite.findUnique({
       where: { token: invite },
@@ -46,15 +76,19 @@ async function handleJoin(req, res) {
       const created = await tx.user.create({
         data: {
           facilityId: inv.facilityId,
-          name,
+          name: cleanName,
           role: inv.role,
           pinCode: bcrypt.hashSync(String(pinCode), 10),
         },
       });
-      if (inv.usesLeft <= 1) {
-        await tx.facilityInvite.update({ where: { id: inv.id }, data: { usesLeft: 0 } });
-      } else {
-        await tx.facilityInvite.update({ where: { id: inv.id }, data: { usesLeft: { decrement: 1 } } });
+      // Atomic single-use redemption: only decrement when stock remains, so two
+      // simultaneous requests cannot both consume the last use of an invite.
+      const consumed = await tx.facilityInvite.updateMany({
+        where: { id: inv.id, usesLeft: { gt: 0 } },
+        data: { usesLeft: { decrement: 1 } },
+      });
+      if (consumed.count === 0) {
+        throw new Error("INVITE_ALREADY_USED");
       }
       return created;
     });
@@ -69,7 +103,10 @@ async function handleJoin(req, res) {
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    if (String(err?.message || "") === "INVITE_ALREADY_USED") {
+      return res.status(410).json({ error: "Invite already used. Ask the owner for a fresh link." });
+    }
+    serverError(res, err);
   }
 }
 
@@ -99,7 +136,7 @@ router.post("/invites", requireAuth, requireRole("OWNER"), async (req, res) => {
       link: `/join?invite=${token}`,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -112,7 +149,7 @@ router.get("/invites", requireAuth, requireRole("OWNER"), async (req, res) => {
     });
     res.json(invites);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -126,12 +163,14 @@ router.delete("/invites/:id", requireAuth, requireRole("OWNER"), async (req, res
     await prisma.facilityInvite.delete({ where: { id: existing.id } });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
 // Redeem an invite: staff member joins the facility via link/QR.
 // Exposed publicly at /api/team/join by the server entrypoint (no auth), so the
 // router itself does NOT register /join (it would be behind requireAuth there).
+// The exported handler includes the rate limiter so the public mount is throttled.
+export const joinHandler = [joinLimiter, handleJoin];
 export { router, handleJoin };
 export default router;

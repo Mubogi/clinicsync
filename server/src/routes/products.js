@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { prisma } from "../db.js";
 import { requireRole } from "../auth.js";
+import { serverError, toNonNegativeNumber, toPositiveInt, cleanString } from "../http.js";
 
 const router = Router();
 
@@ -25,7 +26,7 @@ router.get("/", async (req, res) => {
     });
     res.json(products);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -39,7 +40,7 @@ router.get("/:id", async (req, res) => {
     if (!product) return res.status(404).json({ error: "Not found" });
     res.json(product);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -58,36 +59,51 @@ router.post("/", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
     } = req.body;
 
     if (!name) return res.status(400).json({ error: "name required" });
+    const cleanName = cleanString(name, 200);
+    if (!cleanName) return res.status(400).json({ error: "name required" });
+
+    // Prices must be finite and non-negative; NaN/Infinity/negatives would
+    // otherwise be stored and later corrupt sales totals and profit reports.
+    const priceFields = { tabletPrice, stripPrice, boxPrice, costPrice };
+    const prices = {};
+    for (const [k, v] of Object.entries(priceFields)) {
+      if (v == null || v === "") { prices[k] = null; continue; }
+      const n = toNonNegativeNumber(v);
+      if (n == null) return res.status(400).json({ error: `${k} must be a non-negative number` });
+      prices[k] = n;
+    }
+    const spb = toPositiveInt(stripsPerBox);
+    const tps = toPositiveInt(tabletsPerStrip);
 
     // If they bought a box and gave composition, compute strip/tablet sell prices
     // when not explicitly provided.
-    let computedTablet = tabletPrice != null ? Number(tabletPrice) : null;
-    let computedStrip = stripPrice != null ? Number(stripPrice) : null;
-    const computedBox = boxPrice != null ? Number(boxPrice) : null;
+    let computedTablet = prices.tabletPrice;
+    let computedStrip = prices.stripPrice;
+    const computedBox = prices.boxPrice;
 
-    if (stripsPerBox && computedStrip == null && computedBox != null) {
-      computedStrip = Math.max(1, Math.ceil(computedBox / Number(stripsPerBox) / 100) * 100);
+    if (spb && computedStrip == null && computedBox != null) {
+      computedStrip = Math.max(1, Math.ceil(computedBox / spb / 100) * 100);
     }
-    if (tabletsPerStrip && computedTablet == null && computedStrip != null) {
-      computedTablet = Math.max(1, Math.ceil(computedStrip / Number(tabletsPerStrip) / 50) * 50);
+    if (tps && computedTablet == null && computedStrip != null) {
+      computedTablet = Math.max(1, Math.ceil(computedStrip / tps / 50) * 50);
     }
 
     const product = await prisma.product.create({
       data: {
         facilityId: req.user.facilityId,
-        name,
-        genericName: genericName || null,
+        name: cleanName,
+        genericName: cleanString(genericName, 200),
         tabletPrice: computedTablet,
         stripPrice: computedStrip,
         boxPrice: computedBox,
-        costPrice: Number(costPrice || 0),
-        stripsPerBox: stripsPerBox ? Number(stripsPerBox) : null,
-        tabletsPerStrip: tabletsPerStrip ? Number(tabletsPerStrip) : null,
+        costPrice: prices.costPrice ?? 0,
+        stripsPerBox: spb,
+        tabletsPerStrip: tps,
       },
     });
     res.status(201).json(product);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -101,6 +117,21 @@ router.patch("/:id", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
     if (!product) return res.status(404).json({ error: "Not found" });
 
     const { name, genericName, tabletPrice, stripPrice, boxPrice, costPrice, stripsPerBox, tabletsPerStrip } = req.body;
+
+    // Validate any supplied price before it can reach the database.
+    const numeric = { tabletPrice, stripPrice, boxPrice, costPrice };
+    for (const [k, v] of Object.entries(numeric)) {
+      if (v == null) continue;
+      if (toNonNegativeNumber(v) == null) {
+        return res.status(400).json({ error: `${k} must be a non-negative number` });
+      }
+    }
+    if (stripsPerBox != null && toPositiveInt(stripsPerBox) == null) {
+      return res.status(400).json({ error: "stripsPerBox must be a positive whole number" });
+    }
+    if (tabletsPerStrip != null && toPositiveInt(tabletsPerStrip) == null) {
+      return res.status(400).json({ error: "tabletsPerStrip must be a positive whole number" });
+    }
 
     const history = [];
     if (costPrice != null && Number(costPrice) !== product.costPrice) {
@@ -119,14 +150,14 @@ router.patch("/:id", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
     const updated = await prisma.product.update({
       where: { id },
       data: {
-        name: name ?? product.name,
-        genericName: genericName !== undefined ? genericName : product.genericName,
+        name: name != null ? (cleanString(name, 200) || product.name) : product.name,
+        genericName: genericName !== undefined ? cleanString(genericName, 200) : product.genericName,
         tabletPrice: tabletPrice != null ? Number(tabletPrice) : product.tabletPrice,
         stripPrice: stripPrice != null ? Number(stripPrice) : product.stripPrice,
         boxPrice: boxPrice != null ? Number(boxPrice) : product.boxPrice,
         costPrice: costPrice != null ? Number(costPrice) : product.costPrice,
-        stripsPerBox: stripsPerBox != null ? Number(stripsPerBox) : product.stripsPerBox,
-        tabletsPerStrip: tabletsPerStrip != null ? Number(tabletsPerStrip) : product.tabletsPerStrip,
+        stripsPerBox: stripsPerBox != null ? toPositiveInt(stripsPerBox) : product.stripsPerBox,
+        tabletsPerStrip: tabletsPerStrip != null ? toPositiveInt(tabletsPerStrip) : product.tabletsPerStrip,
       },
     });
 
@@ -147,7 +178,7 @@ router.patch("/:id", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
 
     res.json(updated);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -158,10 +189,21 @@ router.delete("/:id", requireRole("OWNER"), async (req, res) => {
       where: { id: req.params.id, facilityId: req.user.facilityId },
     });
     if (!product) return res.status(404).json({ error: "Not found" });
-    await prisma.product.delete({ where: { id: product.id } });
+
+    // Stock batches still point at this product (FK). Detach them rather than
+    // failing with a raw constraint error — existing stock stays sellable, just
+    // without the catalogue link.
+    await prisma.$transaction([
+      prisma.inventory.updateMany({
+        where: { facilityId: req.user.facilityId, productId: product.id },
+        data: { productId: null },
+      }),
+      prisma.priceHistory.deleteMany({ where: { productId: product.id } }),
+      prisma.product.delete({ where: { id: product.id } }),
+    ]);
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 

@@ -44,6 +44,7 @@ model Facility {
   rememberTokens   RememberToken[]
   invites          FacilityInvite[]
   deleteRequests   DeleteRequest[]
+  backups          Backup[]
 }
 
 // Remember-me persistent sessions (per user+facility, auto-expire)
@@ -226,6 +227,24 @@ model FacilityInvite {
   usesLeft   Int      @default(1)
   expiresAt  DateTime
   createdAt  DateTime @default(now())
+}
+
+// ============ BACKUPS ============
+
+// A restorable snapshot of one facility's data. The owner can download it and
+// later upload it to recover the whole shop if the server is lost or tampered
+// with. Payload is a JSON blob (gzipped is handled at the transport layer).
+model Backup {
+  id         String   @id @default(uuid())
+  facilityId String
+  facility   Facility @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  label      String? // e.g. "Monthly auto-backup — 2026-09"
+  kind       String   @default("MANUAL") // MANUAL | MONTHLY | PRE_RESTORE
+  sizeBytes  Int      @default(0)
+  checksum   String? // sha256 of the payload, to detect corruption/tampering
+  createdBy  String? // user id
+  createdAt  DateTime @default(now())
+  payload    Json
 }
 
 // ============ DELETE APPROVAL WORKFLOW ============

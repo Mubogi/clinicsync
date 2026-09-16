@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { prisma } from "../db.js";
 import { getTier } from "../plans.js";
+import { serverError } from "../http.js";
 
 const router = Router();
 const DAY = 24 * 60 * 60 * 1000;
@@ -184,7 +185,7 @@ router.get("/", async (req, res) => {
       },
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 

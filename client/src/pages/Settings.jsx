@@ -19,6 +19,10 @@ import {
   CheckSquare,
   XCircle,
   Clock,
+  Database,
+  Download,
+  Save,
+  RotateCcw,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiFetch } from "../lib/api.js";
@@ -56,6 +60,84 @@ export default function Settings() {
   // Delete-approval queue (owner approves, staff see their own)
   const [approvals, setApprovals] = useState([]);
   const isOwner = role === "OWNER";
+
+  // Backups (owner only)
+  const [backups, setBackups] = useState([]);
+  const [backupBusy, setBackupBusy] = useState(false);
+
+  const loadBackups = async () => {
+    if (!isOwner) return;
+    try {
+      const d = await apiFetch("/backups");
+      setBackups(Array.isArray(d) ? d : []);
+    } catch {
+      /* owner-only endpoint; ignore for non-owners */
+    }
+  };
+
+  const stampNow = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+
+  // Triggers a browser download of a fresh, point-in-time backup file.
+  async function downloadBackup() {
+    await triggerDownload("/api/backups/download", `clinicsync-backup-${stampNow()}.json.gz`);
+    loadBackups();
+  }
+
+  async function downloadStoredBackup(id) {
+    await triggerDownload(`/api/backups/${id}/download`, `clinicsync-backup-${stampNow()}.json.gz`);
+  }
+
+  async function triggerDownload(url, filename) {
+    try {
+      setBackupBusy(true);
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${session?.token}` },
+      });
+      if (!res.ok) throw new Error("Could not create backup. Please try again.");
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(objectUrl);
+      flash(true, "Backup downloaded. Keep it somewhere safe.");
+    } catch (e) {
+      flash(false, e.message);
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  // Saves a copy on the server so it can be restored from any device.
+  async function saveBackupNow() {
+    try {
+      setBackupBusy(true);
+      await apiFetch("/backups", { method: "POST", body: JSON.stringify({ kind: "MANUAL" }) });
+      flash(true, "Backup saved on the server.");
+      loadBackups();
+    } catch (e) {
+      flash(false, e.message);
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function restoreBackup(id) {
+    if (!confirm("Restore this backup? Current data will be replaced by the backup contents.")) return;
+    try {
+      setBackupBusy(true);
+      await apiFetch(`/backups/${id}/restore`, { method: "POST", body: JSON.stringify({}) });
+      flash(true, "Backup restored. Reloading…");
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (e) {
+      flash(false, e.message);
+    } finally {
+      setBackupBusy(false);
+    }
+  }
 
   const loadInvites = async () => {
     if (!isOwner) return;
@@ -132,6 +214,7 @@ export default function Settings() {
     loadUsers();
     loadInvites();
     loadApprovals();
+    loadBackups();
   }, []);
 
   const flash = (ok, txt) => {
@@ -649,6 +732,77 @@ export default function Settings() {
           </div>
         </div>
       </div>
+
+      {/* Backups — owner only */}
+      {isOwner && (
+        <div className="bg-white rounded-xl border border-slate-200">
+          <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+            <Database size={18} className="text-slate-400" />
+            <h2 className="font-semibold text-slate-900">Backups &amp; restore</h2>
+          </div>
+          <div className="px-5 py-4 space-y-4">
+            <p className="text-sm text-slate-600">
+              Download a full copy of your clinic data at any time. If the system is ever
+              compromised or data is lost, you can restore it from a backup. An automatic
+              monthly backup is also saved on the server.
+            </p>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={downloadBackup}
+                disabled={backupBusy}
+                className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg"
+              >
+                <Download size={16} /> Download backup file
+              </button>
+              <button
+                onClick={saveBackupNow}
+                disabled={backupBusy}
+                className="inline-flex items-center gap-2 border border-slate-300 hover:border-emerald-400 disabled:opacity-50 text-slate-700 text-sm font-medium px-4 py-2 rounded-lg"
+              >
+                <Save size={16} /> Save backup on server
+              </button>
+            </div>
+
+            {backups.length > 0 && (
+              <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                {backups.map((b) => (
+                  <div key={b.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-sm text-slate-800 truncate">
+                        {b.label || (b.kind === "MONTHLY" ? "Monthly backup" : "Manual backup")}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {fmtDate(b.createdAt)} · {b.kind} · {Math.max(1, Math.round((b.sizeBytes || 0) / 1024))} KB
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <a
+                        href={`/api/backups/${b.id}/download`}
+                        onClick={(e) => {
+                          // <a> cannot carry the bearer token, so drive it via fetch.
+                          e.preventDefault();
+                          downloadStoredBackup(b.id);
+                        }}
+                        className="text-xs font-medium text-emerald-700 hover:underline"
+                      >
+                        Download
+                      </a>
+                      <button
+                        onClick={() => restoreBackup(b.id)}
+                        disabled={backupBusy}
+                        className="inline-flex items-center gap-1 text-xs font-medium text-red-600 hover:underline disabled:opacity-50"
+                      >
+                        <RotateCcw size={13} /> Restore
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Danger zone */}
       <div className="bg-white rounded-xl border border-red-200">

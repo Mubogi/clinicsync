@@ -1,8 +1,11 @@
 import { Router } from "express";
 
 import { prisma } from "../db.js";
+import { serverError } from "../http.js";
 
 const router = Router();
+
+const MAX_BATCH = 500;
 
 // Pull: return all records with syncStatus=false (or all if ?full=1) that came from remote
 // This is where the client posts its locally-created records marked syncStatus=false
@@ -10,13 +13,24 @@ router.post("/push", async (req, res) => {
   const { sales = [], expenses = [], inventories = [] } = req.body || {};
   const facilityId = req.user.facilityId;
 
+  if (
+    !Array.isArray(sales) || !Array.isArray(expenses) || !Array.isArray(inventories) ||
+    sales.length > MAX_BATCH || expenses.length > MAX_BATCH || inventories.length > MAX_BATCH
+  ) {
+    return res.status(400).json({ error: `Each sync list must be an array of at most ${MAX_BATCH} records.` });
+  }
+
   const pushed = { sales: 0, expenses: 0, inventories: 0 };
 
   await prisma.$transaction(async (tx) => {
     for (const s of sales) {
       if (!s.id || !s.items) continue;
+      // A client-supplied id is only trusted for rows that already belong to
+      // this facility. Otherwise a staff member could overwrite (and thereby
+      // read or hijack) another clinic's sale by guessing its UUID.
       const existing = await tx.sale.findUnique({ where: { id: s.id } });
       if (existing) {
+        if (existing.facilityId !== facilityId) continue;
         await tx.sale.update({ where: { id: s.id }, data: { syncStatus: true } });
         pushed.sales++;
         continue;
@@ -25,7 +39,7 @@ router.post("/push", async (req, res) => {
         data: {
           id: s.id,
           facilityId,
-          userId: s.userId || null,
+          userId: req.user.sub || null,
           cashierName: s.cashierName || null,
           receiptNumber: Number(s.receiptNumber) || 0,
           totalAmount: Number(s.totalAmount) || 0,
@@ -56,6 +70,7 @@ router.post("/push", async (req, res) => {
       if (!e.id) continue;
       const existing = await tx.expense.findUnique({ where: { id: e.id } });
       if (existing) {
+        if (existing.facilityId !== facilityId) continue;
         await tx.expense.update({ where: { id: e.id }, data: { syncStatus: true } });
         pushed.expenses++;
         continue;
@@ -78,6 +93,7 @@ router.post("/push", async (req, res) => {
       if (!it.id) continue;
       const existing = await tx.inventory.findUnique({ where: { id: it.id } });
       if (existing) {
+        if (existing.facilityId !== facilityId) continue;
         await tx.inventory.update({ where: { id: it.id }, data: { syncStatus: true } });
         pushed.inventories++;
         continue;
@@ -137,7 +153,7 @@ router.get("/pull", async (req, res) => {
       facility: req.user.facilityId,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 

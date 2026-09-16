@@ -1,6 +1,7 @@
 import { Router } from "express";
 
 import { prisma } from "../db.js";
+import { serverError, toPositiveInt } from "../http.js";
 
 const router = Router();
 
@@ -28,15 +29,31 @@ router.post("/", async (req, res) => {
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "At least one sale item required" });
   }
+  if (items.length > 200) {
+    return res.status(400).json({ error: "Too many items in one sale." });
+  }
+  if (paymentMethod && !["CASH", "MOMO", "MIXED"].includes(paymentMethod)) {
+    return res.status(400).json({ error: "Invalid payment method." });
+  }
+  if (momoNetwork && !["MTN", "AIRTEL"].includes(momoNetwork)) {
+    return res.status(400).json({ error: "Invalid mobile-money network." });
+  }
 
   // Validate items
   for (const it of items) {
-    if (!it.inventoryId || !it.quantity || it.quantity <= 0) {
-      return res.status(400).json({ error: "Each item needs inventoryId and positive quantity" });
+    if (!it.inventoryId || toPositiveInt(it.quantity) == null) {
+      return res.status(400).json({ error: "Each item needs inventoryId and a positive whole quantity" });
     }
   }
 
-  const result = await prisma.$transaction(async (tx) => {
+  let result;
+  try {
+    result = await prisma.$transaction(async (tx) => {
+    // Serialize receipts for this facility. Postgres advisory locks are keyed on
+    // a 64-bit int, so we hash the facilityId into one. Without this, two
+    // concurrent sales read the same "last receipt" and both write N+1.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${req.user.facilityId}))`;
+
     // Determine next receipt number for this facility
     const lastSale = await tx.sale.findFirst({
       where: { facilityId: req.user.facilityId },
@@ -62,7 +79,11 @@ router.post("/", async (req, res) => {
       let product = null;
       let unitPrice = inv.sellingPrice;
       if (it.productId) {
-        product = await tx.product.findUnique({ where: { id: it.productId } });
+        // Scoped to this facility: otherwise a foreign productId would leak
+        // another clinic's catalogue pricing into this sale.
+        product = await tx.product.findFirst({
+          where: { id: it.productId, facilityId: req.user.facilityId },
+        });
         if (product) {
           const byUnit = {
             Tablet: product.tabletPrice,
@@ -138,9 +159,17 @@ router.post("/", async (req, res) => {
     });
 
     return sale;
-  });
-
-  res.status(201).json(result);
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    // Stock/validation failures raised inside the transaction carry a message we
+    // authored, so they are safe to surface to the cashier.
+    const msg = String(err?.message || "");
+    if (/^(Insufficient stock|Inventory item not found)/.test(msg)) {
+      return res.status(409).json({ error: msg });
+    }
+    return serverError(res, err);
+  }
 });
 
 // List sales (optional date range), paginated
@@ -163,7 +192,7 @@ router.get("/", async (req, res) => {
     });
     res.json(sales);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -177,7 +206,7 @@ router.get("/receipt/:receiptNumber", async (req, res) => {
     if (!sale) return res.status(404).json({ error: "Receipt not found" });
     res.json(sale);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 

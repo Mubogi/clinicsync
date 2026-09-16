@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { prisma } from "../db.js";
 import { requireAuth, requireRole } from "../auth.js";
+import { serverError } from "../http.js";
 
 const router = Router();
 
@@ -65,7 +66,7 @@ router.delete("/:kind/:id", requireAuth, requireRole("OWNER"), async (req, res) 
     if (!ok) return res.status(404).json({ error: "Not found" });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -105,7 +106,7 @@ router.post("/request", requireAuth, async (req, res) => {
     });
     res.status(201).json(request);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -122,7 +123,7 @@ router.get("/requests", requireAuth, async (req, res) => {
     });
     res.json(requests);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -146,7 +147,7 @@ router.post("/requests/:id/approve", requireAuth, requireRole("OWNER"), async (r
     });
     res.json(updated);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -166,7 +167,7 @@ router.post("/requests/:id/reject", requireAuth, requireRole("OWNER"), async (re
     });
     res.json(updated);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 

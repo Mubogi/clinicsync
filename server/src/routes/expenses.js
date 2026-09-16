@@ -1,6 +1,8 @@
 import { Router } from "express";
 
 import { prisma } from "../db.js";
+import { requireRole } from "../auth.js";
+import { serverError, toNonNegativeNumber, cleanString } from "../http.js";
 
 const router = Router();
 
@@ -38,7 +40,7 @@ router.get("/", async (req, res) => {
     });
     res.json(expenses);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -49,17 +51,21 @@ router.post("/", async (req, res) => {
     if (!category || amount == null) {
       return res.status(400).json({ error: "category and amount required" });
     }
+    const value = toNonNegativeNumber(amount);
+    if (value == null) {
+      return res.status(400).json({ error: "amount must be a non-negative number" });
+    }
     const expense = await prisma.expense.create({
       data: {
         facilityId: req.user.facilityId,
-        category,
-        amount: Number(amount),
-        description: description || null,
+        category: cleanString(category, 80) || "Other",
+        amount: value,
+        description: cleanString(description, 300),
       },
     });
     res.status(201).json(expense);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
@@ -72,22 +78,26 @@ router.patch("/:id", async (req, res) => {
       return res.status(404).json({ error: "Not found" });
     }
     const { category, amount, description } = req.body;
+    if (amount != null && toNonNegativeNumber(amount) == null) {
+      return res.status(400).json({ error: "amount must be a non-negative number" });
+    }
     const expense = await prisma.expense.update({
       where: { id },
       data: {
-        category: category ?? existing.category,
-        amount: amount != null ? Number(amount) : existing.amount,
-        description: description !== undefined ? description : existing.description,
+        category: category != null ? (cleanString(category, 80) || existing.category) : existing.category,
+        amount: amount != null ? toNonNegativeNumber(amount) : existing.amount,
+        description: description !== undefined ? cleanString(description, 300) : existing.description,
       },
     });
     res.json(expense);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
-// Delete expense
-router.delete("/:id", async (req, res) => {
+// Delete expense — owners only. Staff must go through the approval workflow
+// (/approvals/request with a reason), which is what the UI already prompts for.
+router.delete("/:id", requireRole("OWNER"), async (req, res) => {
   try {
     const { id } = req.params;
     const existing = await prisma.expense.findUnique({ where: { id } });
@@ -97,7 +107,7 @@ router.delete("/:id", async (req, res) => {
     await prisma.expense.delete({ where: { id } });
     res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    serverError(res, err);
   }
 });
 
