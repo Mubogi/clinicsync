@@ -153,6 +153,61 @@ router.patch("/facilities/:id/suspension", requireAuth, requireAdmin, async (req
   }
 });
 
+// List the staff of one clinic so the operator can act on an individual.
+router.get("/facilities/:id/users", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const users = await prisma.user.findMany({
+      where: { facilityId: req.params.id },
+      select: { id: true, name: true, role: true, active: true, createdAt: true },
+      orderBy: { createdAt: "asc" },
+    });
+    res.json(users);
+  } catch (err) {
+    serverError(res, err);
+  }
+});
+
+// Deactivate or reactivate a single user across any clinic.
+//
+// requireAuth() re-checks `active` on every request, so a deactivated user is
+// locked out immediately rather than when their token expires.
+router.patch("/users/:id/active", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { active } = req.body;
+    if (typeof active !== "boolean") {
+      return res.status(400).json({ error: "active must be true or false" });
+    }
+    // Don't let the operator lock themselves out of their own console.
+    if (req.params.id === req.user.sub) {
+      return res.status(400).json({ error: "You cannot deactivate your own account" });
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return res.status(404).json({ error: "Not found" });
+
+    // Never leave a clinic with no active owner to administer it.
+    if (!active && target.role === "OWNER") {
+      const otherOwners = await prisma.user.count({
+        where: { facilityId: target.facilityId, role: "OWNER", active: true, id: { not: target.id } },
+      });
+      if (otherOwners === 0) {
+        return res.status(400).json({
+          error: "This is the clinic's only active owner. Deactivate the clinic instead.",
+        });
+      }
+    }
+
+    const user = await prisma.user.update({
+      where: { id: req.params.id },
+      data: { active },
+      select: { id: true, name: true, role: true, active: true },
+    });
+    res.json(user);
+  } catch (err) {
+    serverError(res, err);
+  }
+});
+
 // Billing history for one clinic.
 router.get("/facilities/:id/payments", requireAuth, requireAdmin, async (req, res) => {
   try {

@@ -12,6 +12,8 @@ import {
   X,
   Wallet,
   TrendingUp,
+  UserX,
+  UserCheck,
 } from "lucide-react";
 import { apiFetch } from "../lib/api.js";
 import { TIERS, fmtShortMoney, fmtDate, cx } from "../lib/utils.js";
@@ -33,6 +35,7 @@ export default function Admin() {
   // Which clinic's billing drawer is open, and the form state for it
   const [openId, setOpenId] = useState(null);
   const [payments, setPayments] = useState({});
+  const [staff, setStaff] = useState({});
   const [form, setForm] = useState({ tier: "PREMIUM", months: 1, amountUgx: "", note: "" });
 
   async function load() {
@@ -69,10 +72,41 @@ export default function Admin() {
       note: "",
     });
     try {
-      const data = await apiFetch(`/admin/facilities/${f.id}/payments`);
+      const [data, users] = await Promise.all([
+        apiFetch(`/admin/facilities/${f.id}/payments`),
+        apiFetch(`/admin/facilities/${f.id}/users`),
+      ]);
       setPayments((p) => ({ ...p, [f.id]: data }));
+      setStaff((s) => ({ ...s, [f.id]: users }));
     } catch (e) {
       setErr(e.message);
+    }
+  }
+
+  async function refreshDrawer(id) {
+    const [data, users] = await Promise.all([
+      apiFetch(`/admin/facilities/${id}/payments`),
+      apiFetch(`/admin/facilities/${id}/users`),
+    ]);
+    setPayments((p) => ({ ...p, [id]: data }));
+    setStaff((s) => ({ ...s, [id]: users }));
+  }
+
+  async function setUserActive(id, facilityId, active) {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      await apiFetch(`/admin/users/${id}/active`, {
+        method: "PATCH",
+        body: JSON.stringify({ active }),
+      });
+      setMsg(active ? "User reactivated." : "User deactivated.");
+      await refreshDrawer(facilityId);
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -93,8 +127,7 @@ export default function Admin() {
       });
       setMsg(`Activated ${form.tier} for ${form.months} month(s).`);
       await load();
-      const data = await apiFetch(`/admin/facilities/${id}/payments`);
-      setPayments((p) => ({ ...p, [id]: data }));
+      await refreshDrawer(id);
     } catch (e) {
       setErr(e.message);
     } finally {
@@ -346,6 +379,59 @@ export default function Admin() {
                     <span className="text-xs text-slate-500 ml-auto">
                       Extends from the current period end, so early renewal adds time.
                     </span>
+                  </div>
+
+                  <div>
+                    <div className="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-1.5">
+                      <Users size={12} /> Users
+                      {staff[f.id]?.length
+                        ? ` · ${staff[f.id].filter((u) => u.active).length} active of ${staff[f.id].length}`
+                        : ""}
+                    </div>
+                    {staff[f.id]?.length ? (
+                      <div className="bg-white border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-64 overflow-auto">
+                        {staff[f.id].map((u) => (
+                          <div key={u.id} className="px-3 py-2 text-xs flex items-center justify-between gap-3">
+                            <span
+                              className={cx(
+                                "font-medium truncate",
+                                u.active ? "text-slate-700" : "text-slate-400 line-through"
+                              )}
+                            >
+                              {u.name}
+                            </span>
+                            <span className="text-slate-500">{u.role}</span>
+                            <span
+                              className={cx(
+                                "text-[10px] font-bold px-1.5 py-0.5 rounded uppercase",
+                                u.active ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"
+                              )}
+                            >
+                              {u.active ? "Active" : "Off"}
+                            </span>
+                            <button
+                              onClick={() => setUserActive(u.id, f.id, !u.active)}
+                              disabled={busy}
+                              className={cx(
+                                "flex items-center gap-1 rounded px-2 py-1 border disabled:opacity-50",
+                                u.active
+                                  ? "border-red-200 text-red-600 hover:bg-red-50"
+                                  : "border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                              )}
+                            >
+                              {u.active ? <UserX size={12} /> : <UserCheck size={12} />}
+                              {u.active ? "Deactivate" : "Reactivate"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-xs text-slate-400">No users loaded.</div>
+                    )}
+                    <p className="text-[10px] text-slate-400 mt-1.5">
+                      Deactivation takes effect on the user's next request, not when their session
+                      expires. A clinic must always keep one active owner.
+                    </p>
                   </div>
 
                   <div>

@@ -189,6 +189,38 @@ async function main() {
   r = await req("GET", "/admin/facilities", { token: T.cashier });
   ok("non-admin cannot list all clinics", r.status === 403, r.status);
 
+  // Per-user deactivation: takes effect on the user's next request.
+  r = await req("GET", `/admin/facilities/${facilityId}/users`, { token: T.owner });
+  ok("admin lists a clinic's users", r.status === 200 && Array.isArray(r.data) && r.data.length > 0, r.status);
+  const cashierRow = (r.data || []).find((u) => u.role === "CASHIER");
+  if (cashierRow) {
+    r = await req("PATCH", `/admin/users/${cashierRow.id}/active`, {
+      token: T.owner,
+      body: { active: false },
+    });
+    ok("admin deactivates a user", r.status === 200 && r.data.active === false, r);
+
+    const cashierToken = T.cashier;
+    r = await req("GET", "/inventory", { token: cashierToken });
+    ok("deactivated user is locked out immediately", r.status === 401, r.status);
+
+    r = await req("PATCH", `/admin/users/${cashierRow.id}/active`, {
+      token: T.owner,
+      body: { active: true },
+    });
+    ok("admin reactivates a user", r.status === 200 && r.data.active === true, r);
+    r = await req("GET", "/inventory", { token: cashierToken });
+    ok("reactivated user regains access", r.status === 200, r.status);
+  }
+
+  // The operator must not be able to lock themselves out.
+  const adminMe = (await req("GET", "/auth/me", { token: T.owner })).data;
+  r = await req("PATCH", `/admin/users/${adminMe?.user?.id}/active`, {
+    token: T.owner,
+    body: { active: false },
+  });
+  ok("admin cannot deactivate their own account", r.status === 400, r.status);
+
   console.log("\n== invites / QR join ==");
   r = await req("POST", "/team/invites", { token: T.owner, body: { role: "CASHIER" } });
   ok("owner creates invite", r.status === 201 && !!r.data.token, r);
