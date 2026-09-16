@@ -12,6 +12,7 @@ import {
   restoreFacilitySnapshot,
   storeBackup,
 } from "../backup.js";
+import { serverError, safeBadRequest } from "../http.js";
 
 const router = Router();
 
@@ -138,7 +139,7 @@ router.post(
         },
       });
     } catch (err) {
-      res.status(400).json({ error: err.message });
+      safeBadRequest(res, err);
     }
   }
 );
@@ -155,7 +156,7 @@ router.post("/:id/restore", requireRole("OWNER"), async (req, res) => {
     });
     res.json({ ok: true, restoredFrom: row.createdAt, counts: stats });
   } catch (err) {
-    res.status(400).json({ error: err.message });
+    safeBadRequest(res, err);
   }
 });
 

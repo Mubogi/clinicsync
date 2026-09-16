@@ -127,9 +127,23 @@ router.post("/", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
       reorderLevel,
       stripsPerBox,
       tabletsPerStrip,
+      tabletPrice,
+      stripPrice,
+      boxPrice,
     } = req.body;
     if (!drugName || !unitType || quantity == null || sellingPrice == null) {
       return res.status(400).json({ error: "drugName, unitType, quantity, sellingPrice required" });
+    }
+    // Per-unit catalog prices. `undefined` means "not supplied" and must not
+    // wipe an existing value; an empty string or 0 is an explicit clear/set.
+    const priceField = (v) => (v === undefined || v === null || v === "" ? undefined : toNonNegativeNumber(v));
+    const explicit = {
+      tabletPrice: priceField(tabletPrice),
+      stripPrice: priceField(stripPrice),
+      boxPrice: priceField(boxPrice),
+    };
+    if (Object.values(explicit).some((v) => v === null)) {
+      return res.status(400).json({ error: "Unit prices must be non-negative numbers" });
     }
     const qty = toNonNegativeNumber(quantity);
     const sell = toNonNegativeNumber(sellingPrice);
@@ -143,32 +157,54 @@ router.post("/", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
     const name = cleanString(drugName, 200);
     if (!name) return res.status(400).json({ error: "drugName required" });
     // find-or-create a Product row for this drug name
+    const normalizedName = name;
     let product = await prisma.product.findFirst({
-      where: { facilityId: req.user.facilityId, name: drugName },
+      where: { facilityId: req.user.facilityId, name: normalizedName },
     });
+
+    // Which catalog price this batch's own unit corresponds to. A drug priced
+    // as a strip should fill stripPrice, and so on — otherwise the POS has no
+    // price to offer for that unit.
+    const unitKeyForType = (t) => {
+      const s = String(t || "").toLowerCase();
+      if (s.startsWith("tablet")) return "tabletPrice";
+      if (s.startsWith("strip")) return "stripPrice";
+      if (s.startsWith("box")) return "boxPrice";
+      return null;
+    };
+    const packUpdate = {
+      ...(toPositiveInt(stripsPerBox) ? { stripsPerBox: toPositiveInt(stripsPerBox) } : {}),
+      ...(toPositiveInt(tabletsPerStrip) ? { tabletsPerStrip: toPositiveInt(tabletsPerStrip) } : {}),
+    };
+
     if (!product) {
+      // Seed the catalog from the batch just added, unless the caller was
+      // explicit. This is what makes a strip-only entry sellable as a strip.
+      const seed = { tabletPrice: null, stripPrice: null, boxPrice: null };
+      const k = unitKeyForType(unitType);
+      if (k) seed[k] = sell;
       product = await prisma.product.create({
         data: {
           facilityId: req.user.facilityId,
-          name,
+          name: normalizedName,
           genericName: null,
-          tabletPrice: unitType === "Tablet" ? sell : null,
-          stripPrice: unitType && unitType.toLowerCase().startsWith("strip") ? sell : null,
-          boxPrice: packageUnit === "Box" ? sell : null,
+          tabletPrice: explicit.tabletPrice ?? seed.tabletPrice,
+          stripPrice: explicit.stripPrice ?? seed.stripPrice,
+          boxPrice: explicit.boxPrice ?? seed.boxPrice,
           costPrice: cost,
           stripsPerBox: toPositiveInt(stripsPerBox),
           tabletsPerStrip: toPositiveInt(tabletsPerStrip),
         },
       });
     } else {
-      // keep pack info in sync when user edits
-      product = await prisma.product.update({
-        where: { id: product.id },
-        data: {
-          stripsPerBox: toPositiveInt(stripsPerBox) || product.stripsPerBox,
-          tabletsPerStrip: toPositiveInt(tabletsPerStrip) || product.tabletsPerStrip,
-        },
-      });
+      // Merge: explicit values win, otherwise fill a still-empty unit from this
+      // batch, and never clobber a price the shop already set.
+      const data = { ...packUpdate };
+      for (const key of ["tabletPrice", "stripPrice", "boxPrice"]) {
+        if (explicit[key] !== undefined) data[key] = explicit[key];
+        else if (product[key] == null && unitKeyForType(unitType) === key) data[key] = sell;
+      }
+      product = await prisma.product.update({ where: { id: product.id }, data });
     }
 
     const item = await prisma.inventory.create({
@@ -207,7 +243,20 @@ router.patch("/:id", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
     if (!existing || existing.facilityId !== req.user.facilityId) {
       return res.status(404).json({ error: "Not found" });
     }
-    const { drugName, unitType, quantity, costPrice, sellingPrice, expiryDate, reorderLevel } = req.body;
+    const {
+      drugName,
+      unitType,
+      quantity,
+      costPrice,
+      sellingPrice,
+      expiryDate,
+      reorderLevel,
+      stripsPerBox,
+      tabletsPerStrip,
+      tabletPrice,
+      stripPrice,
+      boxPrice,
+    } = req.body;
     if (quantity != null && (!Number.isInteger(Number(quantity)) || Number(quantity) < 0)) {
       return res.status(400).json({ error: "quantity must be a whole number >= 0" });
     }
@@ -218,17 +267,55 @@ router.patch("/:id", requireRole("OWNER", "PHARMACIST"), async (req, res) => {
     if (reorderLevel != null && toNonNegativeNumber(reorderLevel) == null) {
       return res.status(400).json({ error: "reorderLevel must be a non-negative number" });
     }
-    const item = await prisma.inventory.update({
-      where: { id },
-      data: {
-        drugName: drugName != null ? (cleanString(drugName, 200) || existing.drugName) : existing.drugName,
-        unitType: unitType ?? existing.unitType,
-        quantity: quantity != null ? Number(quantity) : existing.quantity,
-        costPrice: costPrice != null ? Number(costPrice) : existing.costPrice,
-        sellingPrice: sellingPrice != null ? Number(sellingPrice) : existing.sellingPrice,
-        expiryDate: expiryDate !== undefined ? (expiryDate ? new Date(expiryDate) : null) : existing.expiryDate,
-        reorderLevel: reorderLevel != null ? Number(reorderLevel) : existing.reorderLevel,
-      },
+
+    // Per-unit prices live on the linked Product, which is what the POS sells
+    // from. Editing them here keeps "what I set in Inventory" and "what the
+    // cashier can sell" in agreement.
+    const priceField = (v) => (v === undefined || v === null || v === "" ? undefined : toNonNegativeNumber(v));
+    const explicit = {
+      tabletPrice: priceField(tabletPrice),
+      stripPrice: priceField(stripPrice),
+      boxPrice: priceField(boxPrice),
+    };
+    if (Object.values(explicit).some((v) => v === null)) {
+      return res.status(400).json({ error: "Unit prices must be non-negative numbers" });
+    }
+    const nextSpb = stripsPerBox !== undefined ? toPositiveInt(stripsPerBox) : undefined;
+    const nextTps = tabletsPerStrip !== undefined ? toPositiveInt(tabletsPerStrip) : undefined;
+    if (stripsPerBox !== undefined && stripsPerBox !== "" && nextSpb == null) {
+      return res.status(400).json({ error: "stripsPerBox must be a positive whole number" });
+    }
+    if (tabletsPerStrip !== undefined && tabletsPerStrip !== "" && nextTps == null) {
+      return res.status(400).json({ error: "tabletsPerStrip must be a positive whole number" });
+    }
+    const hasUnitEdits =
+      Object.values(explicit).some((v) => v !== undefined) || nextSpb != null || nextTps != null;
+    if (hasUnitEdits && !existing.productId) {
+      return res.status(400).json({ error: "This item is not linked to a product yet — save it first." });
+    }
+
+    const item = await prisma.$transaction(async (tx) => {
+      if (hasUnitEdits) {
+        const data = {};
+        for (const key of ["tabletPrice", "stripPrice", "boxPrice"]) {
+          if (explicit[key] !== undefined) data[key] = explicit[key];
+        }
+        if (nextSpb != null) data.stripsPerBox = nextSpb;
+        if (nextTps != null) data.tabletsPerStrip = nextTps;
+        await tx.product.update({ where: { id: existing.productId }, data });
+      }
+      return tx.inventory.update({
+        where: { id },
+        data: {
+          drugName: drugName != null ? (cleanString(drugName, 200) || existing.drugName) : existing.drugName,
+          unitType: unitType ?? existing.unitType,
+          quantity: quantity != null ? Number(quantity) : existing.quantity,
+          costPrice: costPrice != null ? Number(costPrice) : existing.costPrice,
+          sellingPrice: sellingPrice != null ? Number(sellingPrice) : existing.sellingPrice,
+          expiryDate: expiryDate !== undefined ? (expiryDate ? new Date(expiryDate) : null) : existing.expiryDate,
+          reorderLevel: reorderLevel != null ? Number(reorderLevel) : existing.reorderLevel,
+        },
+      });
     });
     res.json(item);
   } catch (err) {

@@ -3,7 +3,7 @@ import { Plus, Search, AlertTriangle, X, PackagePlus, Boxes, BookOpen, TrendingU
 import { apiFetch } from "../lib/api.js";
 import { inventoryDb, saveDoc } from "../lib/db.js";
 import { runSync } from "../lib/sync.js";
-import { fmtMoney, fmtDate, cx } from "../lib/utils.js";
+import { fmtMoney, fmtDate, cx, productUnits, unitLabel } from "../lib/utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 import MedicineLibrary from "../components/MedicineLibrary.jsx";
 
@@ -34,7 +34,16 @@ export default function Inventory() {
     sellingPrice: "",
     expiryDate: "",
     reorderLevel: "10",
+    // Pack composition — how a box breaks into strips and tablets.
+    stripsPerBox: "",
+    tabletsPerStrip: "",
+    // Per-unit catalog prices. All three can be set at once so the cashier can
+    // sell a tablet, a strip or a box of the same drug.
+    tabletPrice: "",
+    stripPrice: "",
+    boxPrice: "",
   });
+  const [products, setProducts] = useState([]);
 
   // Buy-a-box form
   const [boxForm, setBoxForm] = useState({
@@ -47,8 +56,9 @@ export default function Inventory() {
 
   async function load() {
     try {
-      const cloud = await apiFetch("/inventory");
+      const [cloud, prods] = await Promise.all([apiFetch("/inventory"), apiFetch("/products")]);
       setItems(cloud);
+      setProducts(prods);
     } catch {
       const res = await inventoryDb.allDocs({ include_docs: true });
       setItems(res.rows.map((r) => r.doc));
@@ -78,30 +88,59 @@ export default function Inventory() {
 
   const lowCount = items.filter((i) => i.quantity <= i.reorderLevel).length;
 
+  function blankForm() {
+    return {
+      drugName: "",
+      unitType: "Strip of 10",
+      quantity: "",
+      costPrice: "",
+      sellingPrice: "",
+      expiryDate: "",
+      reorderLevel: "10",
+      stripsPerBox: "",
+      tabletsPerStrip: "",
+      tabletPrice: "",
+      stripPrice: "",
+      boxPrice: "",
+    };
+  }
+
   function openAdd() {
     setEditing(null);
-    setForm({ drugName: "", unitType: "Strip of 10", quantity: "", costPrice: "", sellingPrice: "", expiryDate: "", reorderLevel: "10" });
+    setForm(blankForm());
     setShowForm(true);
   }
 
   // Select a medicine from the Uganda library → prefill the add form
   function handleLibrarySelect(m) {
     const prices = m.commonPrices || {};
+    const pack = m.pack || {};
     setEditing(null);
     setForm({
+      ...blankForm(),
       drugName: m.name,
       unitType: m.defaultUnit || "Strip of 10",
-      quantity: "",
       costPrice: String(prices.costPrice || ""),
       sellingPrice: String(prices.stripPrice || prices.boxPrice || ""),
-      expiryDate: "",
-      reorderLevel: "10",
+      // The library knows real pack sizes and street prices, so a shop that
+      // picks a medicine can sell tablets, strips and boxes immediately.
+      stripsPerBox: pack.stripsPerBox ? String(pack.stripsPerBox) : (m.stripsPerBox ? String(m.stripsPerBox) : ""),
+      tabletsPerStrip: pack.tabletsPerStrip ? String(pack.tabletsPerStrip) : (m.tabletsPerStrip ? String(m.tabletsPerStrip) : ""),
+      tabletPrice: prices.tabletPrice != null ? String(prices.tabletPrice) : "",
+      stripPrice: prices.stripPrice != null ? String(prices.stripPrice) : "",
+      boxPrice: prices.boxPrice != null ? String(prices.boxPrice) : "",
     });
     setShowForm(true);
     setShowLibrary(false);
   }
 
+  // The linked catalog product holds per-unit prices and pack composition.
+  function productFor(item) {
+    return products.find((p) => p.id === item?.productId) || null;
+  }
+
   function openEdit(item) {
+    const prod = productFor(item) || {};
     setEditing(item);
     setForm({
       drugName: item.drugName,
@@ -111,6 +150,11 @@ export default function Inventory() {
       sellingPrice: String(item.sellingPrice),
       expiryDate: item.expiryDate ? item.expiryDate.slice(0, 10) : "",
       reorderLevel: String(item.reorderLevel),
+      stripsPerBox: prod.stripsPerBox ? String(prod.stripsPerBox) : "",
+      tabletsPerStrip: prod.tabletsPerStrip ? String(prod.tabletsPerStrip) : "",
+      tabletPrice: prod.tabletPrice != null ? String(prod.tabletPrice) : "",
+      stripPrice: prod.stripPrice != null ? String(prod.stripPrice) : "",
+      boxPrice: prod.boxPrice != null ? String(prod.boxPrice) : "",
     });
     setShowForm(true);
   }
@@ -179,6 +223,13 @@ export default function Inventory() {
       sellingPrice: Number(form.sellingPrice),
       expiryDate: form.expiryDate || null,
       reorderLevel: Number(form.reorderLevel || 10),
+      // Sent as numbers when filled, omitted when blank so an existing catalog
+      // price is never accidentally wiped by an empty field.
+      ...(form.stripsPerBox !== "" ? { stripsPerBox: Number(form.stripsPerBox) } : {}),
+      ...(form.tabletsPerStrip !== "" ? { tabletsPerStrip: Number(form.tabletsPerStrip) } : {}),
+      ...(form.tabletPrice !== "" ? { tabletPrice: Number(form.tabletPrice) } : {}),
+      ...(form.stripPrice !== "" ? { stripPrice: Number(form.stripPrice) } : {}),
+      ...(form.boxPrice !== "" ? { boxPrice: Number(form.boxPrice) } : {}),
     };
 
     try {
@@ -327,7 +378,26 @@ export default function Inventory() {
               const expiringSoon = item.expiryDate && new Date(item.expiryDate) < new Date(Date.now() + 60 * 24 * 3600 * 1000);
               return (
                 <tr key={item.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50">
-                  <td className="px-4 py-3 font-medium text-slate-800">{item.drugName}</td>
+                  <td className="px-4 py-3 font-medium text-slate-800">
+                    {item.drugName}
+                    {(() => {
+                      const prod = productFor(item);
+                      const units = productUnits(prod || {});
+                      if (units.length === 0) return null;
+                      return (
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {units.map((u) => (
+                            <span
+                              key={u.key}
+                              className="text-[10px] font-normal bg-slate-100 text-slate-600 rounded px-1.5 py-0.5"
+                            >
+                              {unitLabel(u.key)} {fmtMoney(u.price)}
+                            </span>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </td>
                   <td className="px-4 py-3 text-slate-500">{item.unitType}</td>
                   <td className={cx("px-4 py-3 text-right font-mono", low ? "text-amber-600 font-semibold" : "text-slate-700")}>
                     {item.quantity}
@@ -387,7 +457,7 @@ export default function Inventory() {
 
       {showForm && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h2 className="font-bold text-slate-900">{editing ? "Edit item" : "Add inventory item"}</h2>
               <button onClick={() => setShowForm(false)} className="text-slate-400 hover:text-slate-600">
@@ -435,7 +505,7 @@ export default function Inventory() {
                     onChange={(e) => setForm({ ...form, costPrice: e.target.value })}
                   />
                 </Field>
-                <Field label="Selling price (UGX)">
+                <Field label={`Selling price per ${form.unitType} (UGX)`}>
                   <input
                     className="input"
                     type="number"
@@ -444,6 +514,77 @@ export default function Inventory() {
                     onChange={(e) => setForm({ ...form, sellingPrice: e.target.value })}
                   />
                 </Field>
+              </div>
+
+              {/* Pack composition: how one box breaks down. Needed to sell a
+                  box, a strip and a tablet out of the same purchase. */}
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
+                <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                  Pack size
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Tablets per strip">
+                    <input
+                      className="input"
+                      type="number"
+                      min="1"
+                      value={form.tabletsPerStrip}
+                      onChange={(e) => setForm({ ...form, tabletsPerStrip: e.target.value })}
+                      placeholder="e.g. 10"
+                    />
+                  </Field>
+                  <Field label="Strips per box">
+                    <input
+                      className="input"
+                      type="number"
+                      min="1"
+                      value={form.stripsPerBox}
+                      onChange={(e) => setForm({ ...form, stripsPerBox: e.target.value })}
+                      placeholder="e.g. 10"
+                    />
+                  </Field>
+                </div>
+
+                <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide pt-1">
+                  Price each way you sell it
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Field label="Per tablet">
+                    <input
+                      className="input"
+                      type="number"
+                      min="0"
+                      value={form.tabletPrice}
+                      onChange={(e) => setForm({ ...form, tabletPrice: e.target.value })}
+                      placeholder="—"
+                    />
+                  </Field>
+                  <Field label="Per strip">
+                    <input
+                      className="input"
+                      type="number"
+                      min="0"
+                      value={form.stripPrice}
+                      onChange={(e) => setForm({ ...form, stripPrice: e.target.value })}
+                      placeholder="—"
+                    />
+                  </Field>
+                  <Field label="Per box">
+                    <input
+                      className="input"
+                      type="number"
+                      min="0"
+                      value={form.boxPrice}
+                      onChange={(e) => setForm({ ...form, boxPrice: e.target.value })}
+                      placeholder="—"
+                    />
+                  </Field>
+                </div>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Fill in any unit you sell. Leave one blank and the cashier won't offer it.
+                  With tablets-per-strip and strips-per-box set, stock bought as a box can be
+                  sold as strips or tablets.
+                </p>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Expiry date">

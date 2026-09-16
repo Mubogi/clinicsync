@@ -35,9 +35,27 @@ app.set("trust proxy", 1);
 
 app.use(
   helmet({
-    // The API serves JSON; the SPA is served by the same origin in production.
-    contentSecurityPolicy: false,
+    // The SPA is served from this same origin in production. Inline styles are
+    // needed by the built bundle; scripts are file-based, so 'self' suffices and
+    // blocks injected inline handlers. `blob:` covers print/export flows.
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        fontSrc: ["'self'", "data:"],
+        connectSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+      },
+    },
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    referrerPolicy: { policy: "no-referrer" },
+    hsts: IS_PROD ? { maxAge: 15552000, includeSubDomains: true } : false,
   })
 );
 

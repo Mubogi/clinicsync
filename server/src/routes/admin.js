@@ -26,6 +26,26 @@ const requireAdmin = (req, res, next) => {
   next();
 };
 
+// Every privileged action is recorded. Audit writes must never break the action
+// itself, so failures are logged and swallowed rather than surfaced.
+async function audit(req, action, { facilityId = null, targetId = null, detail = null, meta = null } = {}) {
+  try {
+    await prisma.adminAudit.create({
+      data: {
+        actorId: req.user.sub,
+        actorName: req.user.name || req.user.email || null,
+        action,
+        facilityId,
+        targetId,
+        detail,
+        meta: meta || undefined,
+      },
+    });
+  } catch (err) {
+    console.error("[clinicsync] audit write failed:", err?.message);
+  }
+}
+
 function addMonths(from, months) {
   // Month-stepping on the calendar, so "1 month" from Jan 31 lands in Feb
   // rather than 30 days later.
@@ -128,6 +148,12 @@ router.post("/facilities/:id/subscription", requireAuth, requireAdmin, async (re
       subscriptionEndsAt: updated.subscriptionEndsAt,
       payment,
     });
+    await audit(req, "SUBSCRIPTION_ACTIVATE", {
+      facilityId: id,
+      targetId: facility.id,
+      detail: `${tier} for ${m} month(s), UGX ${Math.round(amount)}`,
+      meta: { tier, months: m, amountUgx: Math.round(amount), periodEnd },
+    });
   } catch (err) {
     serverError(res, err);
   }
@@ -148,6 +174,11 @@ router.patch("/facilities/:id/suspension", requireAuth, requireAdmin, async (req
       },
     });
     res.json(serializeFacility(facility));
+    await audit(req, suspended ? "SUSPEND" : "UNSUSPEND", {
+      facilityId: facility.id,
+      targetId: facility.id,
+      detail: suspended ? facility.suspendedReason : "Suspension lifted",
+    });
   } catch (err) {
     serverError(res, err);
   }
@@ -203,6 +234,11 @@ router.patch("/users/:id/active", requireAuth, requireAdmin, async (req, res) =>
       select: { id: true, name: true, role: true, active: true },
     });
     res.json(user);
+    await audit(req, active ? "USER_ACTIVATE" : "USER_DEACTIVATE", {
+      facilityId: target.facilityId,
+      targetId: target.id,
+      detail: `${target.name || target.id} (${target.role}) ${active ? "reactivated" : "deactivated"}`,
+    });
   } catch (err) {
     serverError(res, err);
   }
@@ -307,6 +343,12 @@ router.patch("/facilities/:id/tier", requireAuth, requireAdmin, async (req, res)
       data: { subscriptionTier },
     });
     res.json(serializeFacility(facility));
+    await audit(req, "TIER_CHANGE", {
+      facilityId: facility.id,
+      targetId: facility.id,
+      detail: `tier set to ${subscriptionTier}`,
+      meta: { subscriptionTier },
+    });
   } catch (err) {
     serverError(res, err);
   }
@@ -318,12 +360,25 @@ router.delete("/facilities/:id", requireAuth, requireAdmin, async (req, res) => 
     const { id } = req.params;
     const f = await prisma.facility.findUnique({ where: { id } });
     if (!f) return res.status(404).json({ error: "Not found" });
+    // Record the deletion before the facility row disappears; the audit entry is
+    // deliberately not scoped by foreign key so it survives the cascade.
+    await audit(req, "FACILITY_DELETE", {
+      facilityId: id,
+      targetId: id,
+      detail: `deleted clinic "${f.name}"`,
+      meta: { name: f.name, slug: f.slug },
+    });
     // cascade manually: movement->inventory->saleitem->sale->user->... (simple approach: delete deepest first)
     await prisma.$transaction([
       prisma.priceHistory.deleteMany({ where: { facilityId: id } }),
       prisma.rememberToken.deleteMany({ where: { facilityId: id } }),
       prisma.dailyReconciliation.deleteMany({ where: { facilityId: id } }),
       prisma.expense.deleteMany({ where: { facilityId: id } }),
+      // Staff invites, stored backups and pending delete requests hold a foreign
+      // key to the facility; leaving them behind blocks the final delete.
+      prisma.facilityInvite.deleteMany({ where: { facilityId: id } }),
+      prisma.backup.deleteMany({ where: { facilityId: id } }),
+      prisma.deleteRequest.deleteMany({ where: { facilityId: id } }),
       prisma.user.deleteMany({ where: { facilityId: id } }),
     ]);
     // remaining children: sale->saleitem, inventory->stockmovement
@@ -334,8 +389,27 @@ router.delete("/facilities/:id", requireAuth, requireAdmin, async (req, res) => 
     await prisma.stockMovement.deleteMany({ where: { inventoryId: { in: invs.map((i) => i.id) } } });
     await prisma.inventory.deleteMany({ where: { facilityId: id } });
     await prisma.product.deleteMany({ where: { facilityId: id } });
+    // Billing records reference the facility too; they go last so the audit
+    // entry above remains the permanent record of the clinic's history.
+    await prisma.payment.deleteMany({ where: { facilityId: id } });
     await prisma.facility.delete({ where: { id } });
     res.json({ ok: true });
+  } catch (err) {
+    serverError(res, err);
+  }
+});
+
+// Read back the platform-admin audit trail. Newest first; optionally scoped to
+// one clinic.
+router.get("/audit", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { facilityId } = req.query;
+    const entries = await prisma.adminAudit.findMany({
+      where: facilityId ? { facilityId: String(facilityId) } : {},
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+    res.json(entries);
   } catch (err) {
     serverError(res, err);
   }

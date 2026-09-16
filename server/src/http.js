@@ -15,6 +15,26 @@ export function badRequest(res, message) {
   return res.status(400).json({ error: message });
 }
 
+// Pass through only the messages this codebase authored. Restore/parse paths
+// raise useful, user-facing errors, but a Prisma or driver failure in the same
+// try/catch would otherwise leak table names and query shapes.
+export function safeBadRequest(res, err) {
+  const msg = String(err?.message || "");
+  const known = [
+    "Facility not found",
+    "Backup file is corrupt",
+    "Backup file is not valid JSON",
+    "Backup file is missing required",
+    "Backup file was created by a newer",
+    "Backup contains no active OWNER",
+  ];
+  if (known.some((prefix) => msg.startsWith(prefix))) {
+    return res.status(400).json({ error: msg });
+  }
+  console.error("[clinicsync] restore failed:", err);
+  return res.status(400).json({ error: "That backup could not be restored." });
+}
+
 // Coerce to a positive integer, or return null when the input is unusable.
 // `Number.isInteger` rejects NaN, Infinity and fractions, which would otherwise
 // slip past `<= 0` checks and corrupt stock levels.

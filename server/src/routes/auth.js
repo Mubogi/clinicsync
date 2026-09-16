@@ -35,6 +35,20 @@ const pinChangeLimiter = rateLimit({
   message: { error: "Too many attempts. Please wait and try again." },
 });
 
+// Escalating cool-off: the first few failures are free (typos are normal on a
+// shared shop tablet), then the wait grows so sustained guessing stalls out.
+const LOCKOUT_THRESHOLD = 5;
+async function recordFailedLogin(facility) {
+  const attempts = (facility.failedLoginAttempts || 0) + 1;
+  const data = { failedLoginAttempts: attempts };
+  if (attempts >= LOCKOUT_THRESHOLD) {
+    const over = attempts - LOCKOUT_THRESHOLD;
+    const minutes = Math.min(60, 5 * Math.pow(2, over));
+    data.lockedUntil = new Date(Date.now() + minutes * 60000);
+  }
+  await prisma.facility.update({ where: { id: facility.id }, data });
+}
+
 // Login by facility name + PIN (optionally remember-me for persistent login)
 router.post("/login", loginLimiter, async (req, res) => {
   try {
@@ -56,10 +70,32 @@ router.post("/login", loginLimiter, async (req, res) => {
     const invalid = () => res.status(401).json({ error: "Invalid facility name or PIN" });
     if (!facility) return invalid();
 
+    // A locked clinic refuses every PIN, including the correct one, until the
+    // cool-off passes. This is what stops an offline-fast brute force that the
+    // per-IP limiter alone cannot see.
+    if (facility.lockedUntil && facility.lockedUntil > new Date()) {
+      const mins = Math.max(1, Math.ceil((facility.lockedUntil - new Date()) / 60000));
+      return res.status(429).json({
+        error: `Too many failed attempts for this clinic. Try again in ${mins} minute${mins === 1 ? "" : "s"}.`,
+      });
+    }
+
     const user = facility.users.find(
       (u) => u.active && bcrypt.compareSync(String(pinCode), u.pinCode)
     );
-    if (!user) return invalid();
+    if (!user) {
+      await recordFailedLogin(facility);
+      return invalid();
+    }
+
+    // Correct PIN clears the counter, so ordinary typos never accumulate into a
+    // lockout for a clinic that is logging in successfully.
+    if (facility.failedLoginAttempts > 0 || facility.lockedUntil) {
+      await prisma.facility.update({
+        where: { id: facility.id },
+        data: { failedLoginAttempts: 0, lockedUntil: null },
+      });
+    }
 
     const token = signToken(user);
     let rememberToken = null;

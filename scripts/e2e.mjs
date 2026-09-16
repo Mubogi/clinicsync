@@ -232,6 +232,124 @@ async function main() {
   r = await req("POST", "/team/join", { body: { invite: inviteToken, name: "Second Use", pinCode: "5739" } });
   ok("single-use invite cannot be reused", r.status === 410 || r.status === 404, r.status);
 
+  console.log("\n== product unit pricing (sell by tablet / strip / box) ==");
+  // Regression: a shop that prices a drug as a strip must be able to sell a
+  // strip. Previously the product ended up with only the price of the unit the
+  // batch was created in, so nothing else could be sold.
+  const uName = "UnitTest" + Date.now();
+  r = await req("POST", "/inventory", {
+    token: T.owner,
+    body: { drugName: uName + "StripOnly", unitType: "Strip of 10", quantity: 20, costPrice: 500, sellingPrice: 1200 },
+  });
+  ok("add item priced only as a strip", r.status === 201 || r.status === 200, r);
+  r = await req("GET", "/products", { token: T.owner });
+  let ps = Array.isArray(r.data) ? r.data : r.data?.products || [];
+  const p1 = ps.find(p => p.name === uName + "StripOnly");
+  ok("strip-only drug is sellable as a strip", p1 && p1.stripPrice === 1200, p1);
+
+  // All three unit prices, set in one go.
+  const uAll = uName + "All";
+  r = await req("POST", "/inventory", {
+    token: T.owner,
+    body: {
+      drugName: uAll, unitType: "Box", quantity: 5, costPrice: 12000, sellingPrice: 20000,
+      stripsPerBox: 10, tabletsPerStrip: 10, tabletPrice: 300, stripPrice: 2500, boxPrice: 20000,
+    },
+  });
+  ok("add item with all three unit prices", r.status === 201 || r.status === 200, r);
+  r = await req("GET", "/products", { token: T.owner });
+  ps = Array.isArray(r.data) ? r.data : r.data?.products || [];
+  const p2 = ps.find(p => p.name === uAll);
+  ok("tablet+strip+box prices persisted", p2 && p2.tabletPrice === 300 && p2.stripPrice === 2500 && p2.boxPrice === 20000, p2);
+  ok("pack size persisted (10 strips/box, 10 tablets/strip)", p2 && p2.stripsPerBox === 10 && p2.tabletsPerStrip === 10, p2);
+
+  r = await req("GET", "/inventory", { token: T.owner });
+  let ivs = Array.isArray(r.data) ? r.data : r.data?.inventory || [];
+  const boxBatch = ivs.find(i => i.drugName === uAll && i.unitType === "Box");
+  ok("box batch has 5 boxes (500 tablets)", !!boxBatch && boxBatch.quantity === 5, boxBatch && boxBatch.quantity);
+
+  // Sell 2 strips out of stock held as boxes: one box must be opened.
+  const tabletsIn = (u) => (u === "Box" ? 100 : u.startsWith("Strip") ? parseInt(u.replace(/\D/g, ""), 10) || 10 : 1);
+  const tabletsOf = async (name) => {
+    const rr = await req("GET", "/inventory", { token: T.owner });
+    const list = Array.isArray(rr.data) ? rr.data : rr.data?.inventory || [];
+    return list.filter(i => i.drugName === name).reduce((s, i) => s + i.quantity * tabletsIn(i.unitType), 0);
+  };
+
+  r = await req("POST", "/sales", {
+    token: T.owner,
+    body: { items: [{ inventoryId: boxBatch.id, productId: p2.id, unitType: "Strip of 10", quantity: 2 }], cashPaid: 5000, paymentMethod: "CASH" },
+  });
+  ok("sell strips from box-held stock", (r.status === 201 || r.status === 200) && r.data?.totalAmount === 5000, r);
+  let tabs = await tabletsOf(uAll);
+  ok("opening a box preserves stock (500 - 2 strips = 480 tablets)", tabs === 480, tabs);
+
+  // Sell 25 tablets out of the same box-held stock: 3 strips get opened.
+  r = await req("POST", "/sales", {
+    token: T.owner,
+    body: { items: [{ inventoryId: boxBatch.id, productId: p2.id, unitType: "Tablet", quantity: 25 }], cashPaid: 7500, paymentMethod: "CASH" },
+  });
+  ok("sell tablets from box-held stock", (r.status === 201 || r.status === 200) && r.data?.totalAmount === 7500, r);
+  tabs = await tabletsOf(uAll);
+  ok("opening strips preserves stock (480 - 25 = 455 tablets)", tabs === 455, tabs);
+
+  // Overselling must be refused rather than silently emptying the batch.
+  r = await req("POST", "/sales", {
+    token: T.owner,
+    body: { items: [{ inventoryId: boxBatch.id, productId: p2.id, unitType: "Box", quantity: 99 }], cashPaid: 1, paymentMethod: "CASH" },
+  });
+  ok("overselling a box is refused", r.status === 409, r.status);
+
+  // Editing an item's unit prices must reach the product the POS sells from.
+  r = await req("POST", "/inventory", {
+    token: T.owner,
+    body: { drugName: uName + "Edit", unitType: "Strip of 10", quantity: 10, costPrice: 500, sellingPrice: 1200 },
+  });
+  const editId = r.data?.id;
+  r = await req("PATCH", `/inventory/${editId}`, {
+    token: T.owner,
+    body: { tabletPrice: 200, boxPrice: 15000, stripsPerBox: 10, tabletsPerStrip: 10 },
+  });
+  ok("edit inventory item saves per-unit prices", r.status === 200, r);
+  r = await req("GET", "/products", { token: T.owner });
+  ps = Array.isArray(r.data) ? r.data : r.data?.products || [];
+  const p3 = ps.find(p => p.name === uName + "Edit");
+  ok("edited unit prices visible to POS", p3 && p3.tabletPrice === 200 && p3.boxPrice === 15000 && p3.stripPrice === 1200, p3);
+
+  // A cashier may sell but not reprice.
+  r = await req("PATCH", `/inventory/${editId}`, { token: T.cashier, body: { boxPrice: 1 } });
+  ok("cashier cannot reprice an item", r.status === 401 || r.status === 403, r.status);
+
+  console.log("\n== security: account lockout & audit ==");
+  // A clinic is locked after repeated wrong PINs, even from rotating IPs.
+  r = await req("POST", "/admin/facilities", {
+    token: T.owner,
+    body: { name: "LockTest" + Date.now(), ownerName: "Lock Owner", ownerPin: "4321" },
+  });
+  const lockName = r.data?.facility?.name;
+  const lockId = r.data?.facility?.id;
+  if (lockName) {
+    for (let i = 0; i < 5; i++) {
+      await req("POST", "/auth/login", { body: { facilityName: lockName, pinCode: "0000" } });
+    }
+    r = await req("POST", "/auth/login", { body: { facilityName: lockName, pinCode: "0000" } });
+    ok("clinic locks after repeated wrong PINs", r.status === 429, r.status);
+    r = await req("POST", "/auth/login", { body: { facilityName: lockName, pinCode: "4321" } });
+    ok("lockout refuses even the correct PIN", r.status === 429, r.status);
+    // Remove the throwaway clinic so it cannot accumulate between runs.
+    r = await req("DELETE", `/admin/facilities/${lockId}`, { token: T.owner });
+    ok("admin can delete a clinic it created", r.status === 200, r.status);
+  } else {
+    ok("clinic locks after repeated wrong PINs", false, "could not create lockout clinic");
+  }
+
+  // The platform-admin surface stays closed to ordinary staff. (The seeded
+  // owner is the configured sysadmin, so the cashier is the right probe here.)
+  r = await req("GET", "/admin/audit", { token: T.cashier });
+  ok("non-admin cannot read admin audit log", r.status === 401 || r.status === 403, r.status);
+  r = await req("POST", "/admin/facilities", { token: T.cashier, body: { name: "Nope", ownerName: "x", ownerPin: "1111" } });
+  ok("non-admin cannot create clinics", r.status === 401 || r.status === 403, r.status);
+
   console.log("\n== reconciliation ==");
   r = await req("GET", "/reconciliation/today", { token: T.owner });
   ok("today reconciliation", r.status === 200, r.status);

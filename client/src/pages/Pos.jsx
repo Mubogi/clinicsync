@@ -4,7 +4,7 @@ import { apiFetch } from "../lib/api.js";
 import { salesDb, inventoryDb } from "../lib/db.js";
 import { runSync } from "../lib/sync.js";
 import { saveDoc } from "../lib/db.js";
-import { fmtMoney, fmtShortMoney, fmtDate, fmtTime, unitLabel, productUnits } from "../lib/utils.js";
+import { fmtMoney, fmtShortMoney, fmtDate, fmtTime, unitLabel, productUnits, availableUnits } from "../lib/utils.js";
 import { useAuth } from "../context/AuthContext.jsx";
 
 const QUICK_ADDS = ["Paracetamol 500mg", "Amoxicillin 250mg", "Metronidazole 400mg"];
@@ -79,7 +79,15 @@ export default function Pos() {
     const units = productUnits(prod || {});
     // If product has no per-unit prices, just sell the batch itself
     if (units.length === 0) {
-      return [{ batch, label: batch?.unitType, price: batch?.sellingPrice, cost: batch?.costPrice || 0, key: batch?.id + "-def", qty: 1 }];
+      return [{
+        batch,
+        label: batch?.unitType,
+        price: batch?.sellingPrice,
+        cost: batch?.costPrice || 0,
+        key: batch?.id + "-def",
+        qty: 1,
+        available: batch?.quantity ?? 0,
+      }];
     }
     return units
       .filter((u) => u.price != null && u.price > 0)
@@ -91,7 +99,12 @@ export default function Pos() {
         key: batch.id + "-" + u.key,
         qty: 1,
         unitKey: u.key,
-      }));
+        // How many of this unit the batch can actually cover, converting across
+        // units when the shop stocks boxes but sells strips or tablets.
+        available: availableUnits(batch, u.key, prod || {}),
+      }))
+      // Only offer a unit this batch can genuinely serve.
+      .filter((s) => s.available > 0);
   }
 
   function addToCart(batch, sku) {
@@ -101,11 +114,12 @@ export default function Pos() {
       return;
     }
     const qty = sku.qty || 1;
+    const max = sku.available != null ? sku.available : batch.quantity;
     setCart((prev) => {
       const existing = prev.find((c) => c.cartKey === sku.key);
       if (existing) {
-        if (existing.qty + qty > batch.quantity) {
-          setNotice(`Only ${batch.quantity} left of ${batch.drugName} (${sku.label})`);
+        if (existing.qty + qty > max) {
+          setNotice(`Only ${max} × ${sku.label} available for ${batch.drugName}`);
           setTimeout(() => setNotice(""), 2500);
           return prev;
         }
@@ -123,6 +137,7 @@ export default function Pos() {
           price: sku.price,
           costPrice: sku.cost || 0,
           qty,
+          max,
         },
       ];
     });
@@ -133,8 +148,7 @@ export default function Pos() {
       prev
         .map((c) => {
           if (c.cartKey !== cartKey) return c;
-          const inv = inventory.find((i) => i.id === c.inventoryId);
-          const max = inv ? inv.quantity : 999;
+          const max = c.max != null ? c.max : 999;
           return { ...c, qty: Math.max(1, Math.min(max, c.qty + delta)) };
         })
         .filter((c) => c.qty > 0)
@@ -317,7 +331,7 @@ export default function Pos() {
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <div>
                       <div className="font-semibold text-slate-900 text-sm">{item.drugName}</div>
-                      <div className="text-xs text-slate-500 mt-0.5">{item.unitType}</div>
+                      <div className="text-xs text-slate-500 mt-0.5">stocked as {item.unitType}</div>
                     </div>
                     <div className="text-right">
                       <div
@@ -328,14 +342,21 @@ export default function Pos() {
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-1.5">
+                    {skus.length === 0 && (
+                      <span className="text-[11px] text-slate-400">
+                        No sellable unit. Set a price per tablet, strip or box.
+                      </span>
+                    )}
                     {skus.map((s) => (
                       <button
                         key={s.key}
                         onClick={() => addToCart(item, s)}
-                        disabled={item.quantity <= 0}
                         className="flex items-center gap-1 bg-slate-50 hover:bg-emerald-50 hover:text-emerald-700 border border-slate-200 rounded-lg px-2 py-1 text-xs font-semibold text-slate-700 disabled:opacity-40 transition-colors"
                       >
                         <Plus size={11} /> {s.label} · {fmtMoney(s.price)}
+                        <span className="font-normal text-slate-400">
+                          ({s.available} left)
+                        </span>
                       </button>
                     ))}
                   </div>

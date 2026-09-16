@@ -141,6 +141,52 @@ export const UNITS = [
 
 export const unitLabel = (u) => (UNITS.find((x) => x.key === u) || { label: u }).label;
 
+// How many tablets one of `unitType` holds. Mirrors the server's helper so the
+// POS can show and cap stock in whichever unit the cashier is selling. Returns
+// 0 when the unit has no defined tablet relationship (Bottle, Sachet, unknown).
+export const tabletsPerUnit = (unitType, product = {}) => {
+  const t = String(unitType || "").toLowerCase();
+  if (t.startsWith("tablet")) return 1;
+  if (t.startsWith("strip")) {
+    const n = parseInt(t.replace(/[^0-9]/g, ""), 10);
+    if (Number.isInteger(n) && n > 0) return n;
+    return product?.tabletsPerStrip || 0;
+  }
+  if (t.startsWith("box")) {
+    const spb = product?.stripsPerBox || 0;
+    const tps = product?.tabletsPerStrip || 0;
+    return spb > 0 && tps > 0 ? spb * tps : 0;
+  }
+  return 0;
+};
+
+// How many `unitKey` can be sold from a batch stocked in another unit.
+// Stock kept as 100 tablets answers "10 strips" and "1 box" for a 10×10 pack.
+// Stock kept AS boxes answers "50 strips": the server opens packs on demand, so
+// what matters is the total in the smaller unit, not whole boxes.
+export const availableUnits = (batch, unitKey, product = {}) => {
+  if (!batch) return 0;
+  if (!unitKey || unitKey === batch.unitType) return batch.quantity;
+  const wanted = tabletsPerUnit(unitKey, product);
+  const have = tabletsPerUnit(batch.unitType, product);
+  if (wanted <= 0 || have <= 0) return 0;
+  const total = (batch.quantity * have) / wanted;
+  // Opening packs only divides cleanly into units that fit the pack; when it
+  // does not, no whole number of the smaller unit can be served from a pack.
+  const cleaner = have / wanted;
+  if (have > wanted && !Number.isInteger(cleaner)) return 0;
+  return Math.floor(total);
+};
+
+// Catalog price for a given unit key.
+export const unitPriceOf = (product = {}, unitKey) => {
+  const t = String(unitKey || "").toLowerCase();
+  if (t.startsWith("tablet")) return product.tabletPrice;
+  if (t.startsWith("strip")) return product.stripPrice;
+  if (t.startsWith("box")) return product.boxPrice;
+  return null;
+};
+
 // A product's sellable units given its price fields
 export const productUnits = (p = {}) =>
   [
