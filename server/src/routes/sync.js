@@ -2,6 +2,7 @@ import { Router } from "express";
 
 import { prisma } from "../db.js";
 import { serverError } from "../http.js";
+import { takeFromStock } from "../lib/stock.js";
 
 const router = Router();
 
@@ -21,8 +22,47 @@ router.post("/push", async (req, res) => {
   }
 
   const pushed = { sales: 0, expenses: 0, inventories: 0 };
+  // Sales that could not be reconciled against stock are reported rather than
+  // silently dropped, so an operator can see the discrepancy.
+  const stockWarnings = [];
 
   await prisma.$transaction(async (tx) => {
+    // Inventories are applied first: a batch created while offline may be the
+    // very batch an offline sale was rung up against, so it must exist before
+    // that sale is replayed.
+    for (const it of inventories) {
+      if (!it.id) continue;
+      const existing = await tx.inventory.findUnique({ where: { id: it.id } });
+      if (existing) {
+        if (existing.facilityId !== facilityId) continue;
+        // Quantity is deliberately not taken from the client here. Stock is
+        // owned by the server, and offline sales already decrement it below;
+        // trusting the client's number too would subtract every sale twice.
+        await tx.inventory.update({ where: { id: it.id }, data: { syncStatus: true } });
+        pushed.inventories++;
+        continue;
+      }
+      await tx.inventory.create({
+        data: {
+          id: it.id,
+          facilityId,
+          productId: it.productId || undefined,
+          drugName: it.drugName,
+          unitType: it.unitType || "Strip",
+          quantity: Number(it.quantity) || 0,
+          costPrice: Number(it.costPrice) || 0,
+          sellingPrice: Number(it.sellingPrice) || 0,
+          expiryDate: it.expiryDate ? new Date(it.expiryDate) : null,
+          reorderLevel: Number(it.reorderLevel) || 10,
+          supplier: it.supplier || null,
+          batch: it.batch || null,
+          createdAt: it.createdAt ? new Date(it.createdAt) : new Date(),
+          syncStatus: true,
+        },
+      });
+      pushed.inventories++;
+    }
+
     for (const s of sales) {
       if (!s.id || !s.items) continue;
       // A client-supplied id is only trusted for rows that already belong to
@@ -30,11 +70,48 @@ router.post("/push", async (req, res) => {
       // read or hijack) another clinic's sale by guessing its UUID.
       const existing = await tx.sale.findUnique({ where: { id: s.id } });
       if (existing) {
+        // Already recorded, so this is a replayed push. Skipping also keeps the
+        // stock decrement below from being applied twice to the same sale.
         if (existing.facilityId !== facilityId) continue;
         await tx.sale.update({ where: { id: s.id }, data: { syncStatus: true } });
         pushed.sales++;
         continue;
       }
+
+      // Decrement stock exactly as a live sale does, opening packs when the
+      // sold unit differs from the batch's unit. Without this a sale rung up
+      // offline was recorded in the ledger but left stock untouched.
+      for (const it of s.items || []) {
+        const qty = Number(it.quantity) || 0;
+        if (!it.inventoryId || qty <= 0) continue;
+        try {
+          const inv = await tx.inventory.findUnique({ where: { id: it.inventoryId } });
+          if (!inv || inv.facilityId !== facilityId) {
+            stockWarnings.push({
+              saleId: s.id,
+              inventoryId: it.inventoryId,
+              error: "inventory batch not found for this facility",
+            });
+            continue;
+          }
+          const product = it.productId
+            ? await tx.product.findFirst({ where: { id: it.productId, facilityId } })
+            : null;
+          await takeFromStock(tx, {
+            facilityId,
+            inv,
+            product,
+            sellUnit: it.unitType,
+            qty,
+            userId: req.user.sub || null,
+          });
+        } catch (err) {
+          // The sale already happened and the money is taken, so it must be
+          // recorded even when stock cannot be reconciled. Surface it instead.
+          stockWarnings.push({ saleId: s.id, inventoryId: it.inventoryId, error: err.message });
+        }
+      }
+
       await tx.sale.create({
         data: {
           id: s.id,
@@ -89,38 +166,9 @@ router.post("/push", async (req, res) => {
       pushed.expenses++;
     }
 
-    for (const it of inventories) {
-      if (!it.id) continue;
-      const existing = await tx.inventory.findUnique({ where: { id: it.id } });
-      if (existing) {
-        if (existing.facilityId !== facilityId) continue;
-        await tx.inventory.update({ where: { id: it.id }, data: { syncStatus: true } });
-        pushed.inventories++;
-        continue;
-      }
-      await tx.inventory.create({
-        data: {
-          id: it.id,
-          facilityId,
-          productId: it.productId || undefined,
-          drugName: it.drugName,
-          unitType: it.unitType || "Strip",
-          quantity: Number(it.quantity) || 0,
-          costPrice: Number(it.costPrice) || 0,
-          sellingPrice: Number(it.sellingPrice) || 0,
-          expiryDate: it.expiryDate ? new Date(it.expiryDate) : null,
-          reorderLevel: Number(it.reorderLevel) || 10,
-          supplier: it.supplier || null,
-          batch: it.batch || null,
-          createdAt: it.createdAt ? new Date(it.createdAt) : new Date(),
-          syncStatus: true,
-        },
-      });
-      pushed.inventories++;
-    }
   });
 
-  res.json({ ok: true, pushed });
+  res.json({ ok: true, pushed, stockWarnings });
 });
 
 // Pull: fetch all remote cloud data so client can hydrate its local PouchDB

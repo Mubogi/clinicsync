@@ -364,6 +364,68 @@ async function main() {
   r = await req("GET", "/backups/download", { token: T.cashier });
   ok("cashier cannot download backup", r.status === 403 || r.status === 401, r.status);
 
+  console.log("\n== offline sync decrements stock ==");
+  // A sale rung up offline is pushed as a whole record, separate from the live
+  // /sales path. It used to be written to the ledger without touching stock, so
+  // every offline sale leaked inventory.
+  r = await req("POST", "/inventory", {
+    token: T.owner,
+    body: {
+      drugName: uName + "Offline", unitType: "Strip of 10", quantity: 40,
+      costPrice: 500, sellingPrice: 1200, tabletPrice: 200, stripsPerBox: 10, tabletsPerStrip: 10,
+    },
+  });
+  const offId = r.data?.id;
+  ok("offline test batch created", r.status === 201 || r.status === 200, r);
+  r = await req("GET", "/products", { token: T.owner });
+  ps = Array.isArray(r.data) ? r.data : r.data?.products || [];
+  const pOff = ps.find(p => p.name === uName + "Offline");
+
+  const offSale = (id, unit, qty, price) => ({
+    id, receiptNumber: 90000 + qty, totalAmount: price * qty, cashPaid: price * qty,
+    momoPaid: 0, paymentMethod: "CASH", createdAt: new Date().toISOString(),
+    items: [{
+      inventoryId: offId, productId: pOff.id, drugName: uName + "Offline",
+      unitType: unit, quantity: qty, unitPrice: price, totalPrice: price * qty, costPrice: 500,
+    }],
+  });
+
+  const offQty = async () => {
+    const rr = await req("GET", "/inventory", { token: T.owner });
+    const list = Array.isArray(rr.data) ? rr.data : rr.data?.inventory || [];
+    return list.filter(i => i.drugName === uName + "Offline" && i.unitType === "Strip of 10")
+      .reduce((s, i) => s + i.quantity, 0);
+  };
+
+  const before = await offQty();
+  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-1", "Strip of 10", 7, 1200)] } });
+  ok("offline sale accepted", r.status === 200 && r.data?.pushed?.sales === 1, r);
+  const after = await offQty();
+  ok("offline sale decrements stock (40 - 7 = 33)", after === before - 7, `${before} -> ${after}`);
+
+  // A retried push (client lost the ack) must not subtract the same sale twice.
+  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-1", "Strip of 10", 7, 1200)] } });
+  const replayed = await offQty();
+  ok("replaying an offline sale does not double-decrement", replayed === after, `${after} -> ${replayed}`);
+
+  // Selling tablets offline out of strip-held stock must open a pack, exactly
+  // as the live /sales path does.
+  const tabletsOff = async () => {
+    const rr = await req("GET", "/inventory", { token: T.owner });
+    const list = Array.isArray(rr.data) ? rr.data : rr.data?.inventory || [];
+    return list.filter(i => i.drugName === uName + "Offline")
+      .reduce((s, i) => s + i.quantity * (i.unitType.startsWith("Strip") ? 10 : 1), 0);
+  };
+  const tabsBefore = await tabletsOff();
+  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-2", "Tablet", 3, 200)] } });
+  ok("offline tablet sale accepted", r.status === 200, r);
+  const tabsAfter = await tabletsOff();
+  ok("offline sale opens a pack (330 - 3 = 327 tablets)", tabsAfter === tabsBefore - 3, `${tabsBefore} -> ${tabsAfter}`);
+  r = await req("GET", "/inventory", { token: T.owner });
+  ivs = Array.isArray(r.data) ? r.data : r.data?.inventory || [];
+  const openedBatch = ivs.find(i => i.drugName === uName + "Offline" && i.unitType === "Tablet");
+  ok("opened tablets exist as their own batch", !!openedBatch && openedBatch.quantity === 7, openedBatch && openedBatch.quantity);
+
   console.log("\n== PWA ==");
   const res = await fetch((process.env.ROOT || "http://localhost:5000") + "/manifest.webmanifest");
   ok("manifest served", res.status === 200, res.status);

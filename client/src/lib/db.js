@@ -38,7 +38,10 @@ export async function getUnsynced(db) {
 export async function saveDoc(db, doc) {
   if (!doc._id) doc._id = crypto.randomUUID();
   doc.updatedAt = new Date().toISOString();
-  doc.synced = false;
+  // Docs pulled from the server are already the source of truth, so callers can
+  // mark them synced. Left false they would be pushed straight back on the next
+  // sync, re-uploading the whole local database every cycle.
+  if (doc.synced !== true) doc.synced = false;
   const result = await db.put(doc);
   // PouchDB adds _rev on put; return merged doc
   const latest = await db.get(result.id);
