@@ -4,6 +4,10 @@ import PouchDB from "pouchdb";
 export const salesDb = new PouchDB("clinicsync_sales");
 export const expensesDb = new PouchDB("clinicsync_expenses");
 export const inventoryDb = new PouchDB("clinicsync_inventory");
+// The product catalogue carries the per-unit prices (tablet/strip/box) the POS
+// builds its sellable SKUs from. Without a local copy the till could only ever
+// sell a batch in the unit it was stocked as once it went offline.
+export const productsDb = new PouchDB("clinicsync_products");
 
 const syncFlag = (doc, flag = false) => {
   doc.synced = flag;
@@ -42,7 +46,13 @@ export async function saveDoc(db, doc) {
   // mark them synced. Left false they would be pushed straight back on the next
   // sync, re-uploading the whole local database every cycle.
   if (doc.synced !== true) doc.synced = false;
-  const result = await db.put(doc);
+  let existing = null;
+  try {
+    existing = await db.get(doc._id);
+  } catch {
+    /* new doc */
+  }
+  const result = await db.put(existing ? { ...doc, _rev: existing._rev } : doc);
   // PouchDB adds _rev on put; return merged doc
   const latest = await db.get(result.id);
   return latest;

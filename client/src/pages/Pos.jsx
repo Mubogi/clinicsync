@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Search, Trash2, Plus, Minus, Printer, CheckCircle2, Zap, Banknote, Smartphone } from "lucide-react";
 import { apiFetch } from "../lib/api.js";
-import { salesDb, inventoryDb } from "../lib/db.js";
+import { salesDb, inventoryDb, productsDb } from "../lib/db.js";
 import { runSync } from "../lib/sync.js";
 import { saveDoc } from "../lib/db.js";
 import { fmtMoney, fmtShortMoney, fmtDate, fmtTime, unitLabel, productUnits, availableUnits } from "../lib/utils.js";
@@ -28,10 +28,14 @@ export default function Pos() {
       const [cloud, prods] = await Promise.all([apiFetch("/inventory"), apiFetch("/products")]);
       setInventory(cloud);
       setProducts(prods);
+      // Keep a local copy so the till can still offer per-unit prices offline.
+      await Promise.all(prods.map((p) => saveDoc(productsDb, { ...p, _id: p.id, synced: true })));
     } catch {
-      // offline: fall back to local pouchdb inventory
+      // offline: fall back to local pouchdb inventory and catalogue
       const res = await inventoryDb.allDocs({ include_docs: true });
       setInventory(res.rows.map((r) => r.doc));
+      const cached = await productsDb.allDocs({ include_docs: true });
+      setProducts(cached.rows.map((r) => r.doc));
     }
   }
 

@@ -398,13 +398,13 @@ async function main() {
   };
 
   const before = await offQty();
-  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-1", "Strip of 10", 7, 1200)] } });
+  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-1-" + uName, "Strip of 10", 7, 1200)] } });
   ok("offline sale accepted", r.status === 200 && r.data?.pushed?.sales === 1, r);
   const after = await offQty();
   ok("offline sale decrements stock (40 - 7 = 33)", after === before - 7, `${before} -> ${after}`);
 
   // A retried push (client lost the ack) must not subtract the same sale twice.
-  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-1", "Strip of 10", 7, 1200)] } });
+  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-1-" + uName, "Strip of 10", 7, 1200)] } });
   const replayed = await offQty();
   ok("replaying an offline sale does not double-decrement", replayed === after, `${after} -> ${replayed}`);
 
@@ -417,7 +417,7 @@ async function main() {
       .reduce((s, i) => s + i.quantity * (i.unitType.startsWith("Strip") ? 10 : 1), 0);
   };
   const tabsBefore = await tabletsOff();
-  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-2", "Tablet", 3, 200)] } });
+  r = await req("POST", "/sync/push", { token: T.owner, body: { sales: [offSale("e2e-off-2-" + uName, "Tablet", 3, 200)] } });
   ok("offline tablet sale accepted", r.status === 200, r);
   const tabsAfter = await tabletsOff();
   ok("offline sale opens a pack (330 - 3 = 327 tablets)", tabsAfter === tabsBefore - 3, `${tabsBefore} -> ${tabsAfter}`);
