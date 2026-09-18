@@ -12,12 +12,14 @@ import {
   Building2,
   BarChart3,
   Settings as SettingsIcon,
+  CreditCard,
+  AlertTriangle,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
-import { initials, TIERS, roleMeta, cx } from "../lib/utils.js";
+import { initials, tierMeta, roleMeta, cx } from "../lib/utils.js";
 
 const NAV = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
+  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, end: true },
   { to: "/pos", label: "POS", icon: ShoppingCart },
   { to: "/inventory", label: "Stock", icon: Package },
   { to: "/expenses", label: "Expenses", icon: Wallet },
@@ -31,7 +33,9 @@ export default function Layout({ children }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const role = session?.user?.role;
-  const tier = session?.facility?.subscriptionTier || "BASIC";
+  const tierKey = session?.facility?.subscriptionTier || "BASIC";
+  const tier = tierMeta(tierKey);
+  const readOnly = !!session?.facility?.readOnly;
   const isOwner = role === "OWNER";
   const isPharmacist = role === "PHARMACIST";
   const allowReports = isOwner || isPharmacist;
@@ -44,6 +48,7 @@ export default function Layout({ children }) {
   });
   if (isOwner) {
     navItems.push({ to: "/settings", label: "Settings", icon: SettingsIcon });
+    navItems.push({ to: "/billing", label: "Billing", icon: CreditCard });
   }
 
   const handleLogout = async (hard) => {
@@ -94,7 +99,7 @@ export default function Layout({ children }) {
             <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
               <span style={{ color: roleMeta(role)?.color }}>{roleMeta(role)?.label}</span>
               <span>·</span>
-              <span style={{ color: TIERS[tier]?.color || "#94a3b8" }}>{TIERS[tier]?.label || tier}</span>
+              <span style={{ color: tier.color }}>{tier.label}</span>
             </div>
           </div>
         </div>
@@ -157,6 +162,24 @@ export default function Layout({ children }) {
         </div>
 
         <main className="flex-1 pb-20 md:pb-8 px-4 md:px-6 py-5 max-w-7xl w-full mx-auto">
+          {readOnly && (
+            <div className="mb-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-start gap-3">
+              <AlertTriangle size={18} className="text-amber-600 shrink-0 mt-0.5" />
+              <div className="text-sm text-amber-900">
+                <strong>Your subscription has ended.</strong> Existing records and reports
+                are still available, but new sales, stock and staff changes are paused
+                until the plan is renewed.
+                {isOwner && (
+                  <>
+                    {" "}
+                    <NavLink to="/billing" className="font-semibold underline">
+                      Renew now
+                    </NavLink>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           {children}
         </main>
 

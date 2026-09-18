@@ -16,65 +16,108 @@ enum SubscriptionTier {
   PRO
 }
 
+// Lifecycle of a self-service payment claim awaiting admin verification.
+// A clinic picks a plan, pays to the JD Hub collection till, then submits the
+// transaction reference; the admin confirms it and the paid period starts.
+enum PaymentRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 model Facility {
-  id               String                @id @default(uuid())
-  name             String                @unique
-  slug             String?               @unique // URL-friendly org slug
-  subscriptionTier SubscriptionTier      @default(BASIC) // BASIC, PREMIUM, PRO
+  id                  String                @id @default(uuid())
+  name                String                @unique
+  slug                String?               @unique // URL-friendly org slug
+  subscriptionTier    SubscriptionTier      @default(BASIC) // BASIC, PREMIUM, PRO
   // Branding (owner-only editable)
-  brandName        String? // Display name shown across the whole system
-  tagline          String?
-  logoEmoji        String?
-  address          String?
-  phone            String?
+  brandName           String? // Display name shown across the whole system
+  tagline             String?
+  logoEmoji           String?
+  address             String?
+  phone               String?
+  // Owner contact captured at signup. Used to send payment/activation notices,
+  // and as the email connection for JD Hub enquiries.
+  email               String?
   // Onboarding: whether the owner has finished first-time setup (clinic details,
   // medicine library pick). Set true on first login through the setup flow.
-  onboarded        Boolean               @default(false)
-  inviteCode       String?               @unique // staff join link token (owner-generated)
+  onboarded           Boolean               @default(false)
+  inviteCode          String?               @unique // staff join link token (owner-generated)
   // ---- Subscription lifecycle (managed from the platform admin panel) ----
   // When the current paid period ends. Past this date the facility is treated
   // as BASIC by getEffectiveTier(), without the stored tier being rewritten, so
   // renewing restores the plan exactly as it was.
-  subscriptionEndsAt DateTime?
+  subscriptionEndsAt  DateTime?
+  // Free-trial window for a self-registered clinic. Billing is manual, so
+  // without this a clinic could not use the product at all until an admin
+  // manually approved their first payment — which stalls signup overnight.
+  // Expiry is evaluated the same way as a lapsed subscription.
+  trialEndsAt         DateTime?
   // Manual switch to cut a clinic off (non-payment, abuse) without deleting it.
-  suspended        Boolean               @default(false)
-  suspendedReason  String?
+  suspended           Boolean               @default(false)
+  suspendedReason     String?
   // Brute-force defence for the shared-PIN login. A 4-digit PIN is only 10,000
   // combinations, and an attacker can rotate IPs past the per-IP rate limit, so
   // the clinic itself is locked after repeated failures.
-  failedLoginAttempts Int                @default(0)
-  lockedUntil      DateTime?
-  createdAt        DateTime              @default(now())
-  updatedAt        DateTime              @updatedAt
-  users            User[]
-  inventories      Inventory[]
-  sales            Sale[]
-  expenses         Expense[]
-  reconciliations  DailyReconciliation[]
-  products         Product[]
-  priceHistory     PriceHistory[]
-  stockMovements   StockMovement[]
-  rememberTokens   RememberToken[]
-  invites          FacilityInvite[]
-  deleteRequests   DeleteRequest[]
-  backups          Backup[]
-  payments         Payment[]
+  failedLoginAttempts Int                   @default(0)
+  lockedUntil         DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  users               User[]
+  inventories         Inventory[]
+  sales               Sale[]
+  expenses            Expense[]
+  reconciliations     DailyReconciliation[]
+  products            Product[]
+  priceHistory        PriceHistory[]
+  stockMovements      StockMovement[]
+  rememberTokens      RememberToken[]
+  invites             FacilityInvite[]
+  deleteRequests      DeleteRequest[]
+  backups             Backup[]
+  payments            Payment[]
+  paymentRequests     PaymentRequest[]
+}
+
+// A clinic's self-service claim that it has paid for a plan. The clinic picks a
+// tier, sends money to the JD Hub collection till, then submits the reference.
+// An admin verifies it against the till statement and approves, which is what
+// actually starts the paid period — so a forged claim grants nothing on its own.
+model PaymentRequest {
+  id              String               @id @default(uuid())
+  facilityId      String
+  facility        Facility             @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  requestedTier   SubscriptionTier
+  months          Int                  @default(1)
+  amountUgx       Int                  @default(0)
+  method          String               @default("AIRTEL") // AIRTEL | MTN
+  payerName       String?
+  payerPhone      String?
+  transactionRef  String // the till transaction ID the payer was given
+  note            String?
+  status          PaymentRequestStatus @default(PENDING)
+  reviewedBy      String?
+  reviewedAt      DateTime?
+  rejectionReason String?
+  createdAt       DateTime             @default(now())
+
+  @@index([facilityId, status])
 }
 
 // Audit trail of plan activations/extensions, so a clinic's billing history is
 // reconstructable when they dispute what they paid for.
 model Payment {
-  id         String   @id @default(uuid())
-  facilityId String
-  facility   Facility @relation(fields: [facilityId], references: [id])
-  tier       SubscriptionTier
-  months     Int
-  amountUgx  Int      @default(0)
-  note       String?
+  id          String           @id @default(uuid())
+  facilityId  String
+  facility    Facility         @relation(fields: [facilityId], references: [id])
+  tier        SubscriptionTier
+  months      Int
+  amountUgx   Int              @default(0)
+  note        String?
   periodStart DateTime
-  periodEnd  DateTime
-  createdAt  DateTime @default(now())
-  recordedBy String? // admin user id / label
+  periodEnd   DateTime
+  createdAt   DateTime         @default(now())
+  recordedBy  String? // admin user id / label
 }
 
 // Append-only record of every platform-admin action. Payments and stock have
@@ -82,12 +125,12 @@ model Payment {
 // previously left no trace at all. Rows are only ever inserted.
 model AdminAudit {
   id         String   @id @default(uuid())
-  actorId    String   // the operator's user id
+  actorId    String // the operator's user id
   actorName  String?
-  action     String   // e.g. ACTIVATE, SUSPEND, USER_DEACTIVATE, TIER_CHANGE
-  facilityId String?  // clinic acted upon, when applicable
-  targetId   String?  // user id / facility id the action targeted
-  detail     String?  // short human-readable summary
+  action     String // e.g. ACTIVATE, SUSPEND, USER_DEACTIVATE, TIER_CHANGE
+  facilityId String? // clinic acted upon, when applicable
+  targetId   String? // user id / facility id the action targeted
+  detail     String? // short human-readable summary
   meta       Json?
   createdAt  DateTime @default(now())
 
@@ -108,45 +151,50 @@ model RememberToken {
 }
 
 model User {
-  id         String          @id @default(uuid())
-  facilityId String
-  facility   Facility        @relation(fields: [facilityId], references: [id])
-  name       String
-  role       String // OWNER, PHARMACIST, CASHIER
-  pinCode    String
-  active     Boolean         @default(true) // disables login when owner "removes" user
-  createdAt  DateTime        @default(now())
-  sales      Sale[] // accountability: every sale attributed to cashier
-  rememberT  RememberToken[]
-  movements  StockMovement[]
+  id           String          @id @default(uuid())
+  facilityId   String
+  facility     Facility        @relation(fields: [facilityId], references: [id])
+  name         String
+  role         String // OWNER, PHARMACIST, CASHIER
+  pinCode      String
+  // Owner-facing sign-in. PIN alone is fine for a shared till, but the owner
+  // uses their own device and gets a real password. Globally unique because
+  // password login does not ask which clinic you belong to.
+  username     String?         @unique
+  passwordHash String?
+  active       Boolean         @default(true) // disables login when owner "removes" user
+  createdAt    DateTime        @default(now())
+  sales        Sale[] // accountability: every sale attributed to cashier
+  rememberT    RememberToken[]
+  movements    StockMovement[]
 }
 
 // ============ CATALOG / PRICING ============
 
 // A product belongs to a facility, sellable in multiple units (tablet/strip/box)
 model Product {
-  id           String         @id @default(uuid())
-  facilityId   String
-  facility     Facility       @relation(fields: [facilityId], references: [id])
-  name         String
-  genericName  String?
+  id              String         @id @default(uuid())
+  facilityId      String
+  facility        Facility       @relation(fields: [facilityId], references: [id])
+  name            String
+  genericName     String?
   // Pricing per unit — a small shop can sell per tablet, strip AND box
-  tabletPrice  Float?
-  stripPrice   Float?
-  boxPrice     Float?
+  tabletPrice     Float?
+  stripPrice      Float?
+  boxPrice        Float?
   // Purchased (cost) — used to compute expected revenue
-  costPrice    Float          @default(0)
+  costPrice       Float          @default(0)
   // Pack composition ("I bought a box, how do I price a strip & tablet?")
-  stripsPerBox Int? // how many strips are inside one box
+  stripsPerBox    Int? // how many strips are inside one box
   tabletsPerStrip Int? // how many tablets are inside one strip
   // Reorder guidance in each unit (show "low" when stock <= reorder)
-  reorderTablets Int? @default(50)
-  reorderStrips  Int? @default(10)
-  reorderBoxes   Int? @default(5)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-  inventories  Inventory[] // stock batches with expiry
-  priceHistory PriceHistory[]
+  reorderTablets  Int?           @default(50)
+  reorderStrips   Int?           @default(10)
+  reorderBoxes    Int?           @default(5)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  inventories     Inventory[] // stock batches with expiry
+  priceHistory    PriceHistory[]
 }
 
 model PriceHistory {
@@ -271,7 +319,7 @@ model FacilityInvite {
   facility   Facility @relation(fields: [facilityId], references: [id])
   token      String   @unique
   role       String   @default("CASHIER") // role granted when this invite is used
-  createdBy  String   // owner user id
+  createdBy  String // owner user id
   usesLeft   Int      @default(1)
   expiresAt  DateTime
   createdAt  DateTime @default(now())
@@ -300,16 +348,16 @@ model Backup {
 // Non-owner staff request to delete a transaction/expense with a reason;
 // the owner approves or rejects. Owners can delete directly.
 model DeleteRequest {
-  id         String    @id @default(uuid())
-  facilityId String
-  facility   Facility  @relation(fields: [facilityId], references: [id])
-  kind       String    // SALE or EXPENSE
-  targetId   String    // sale id or expense id
-  reason     String
-  status     String    @default("PENDING") // PENDING, APPROVED, REJECTED
-  requestedBy String?  // user name snapshot
+  id            String    @id @default(uuid())
+  facilityId    String
+  facility      Facility  @relation(fields: [facilityId], references: [id])
+  kind          String // SALE or EXPENSE
+  targetId      String // sale id or expense id
+  reason        String
+  status        String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  requestedBy   String? // user name snapshot
   requestedById String? // user id
-  approvedBy String? // owner user name
-  approvedAt DateTime?
-  createdAt  DateTime  @default(now())
+  approvedBy    String? // owner user name
+  approvedAt    DateTime?
+  createdAt     DateTime  @default(now())
 }

@@ -118,6 +118,16 @@ export function requireRole(...roles) {
   };
 }
 
+// Same rule as requireActiveSubscription, but lets read-only requests through.
+//
+// Reports and stock lists are how an owner sees what they owe and why they
+// should renew, so blocking GETs would remove the very pages that prompt
+// payment — while POST/PATCH/DELETE are what actually let the shop keep trading.
+export function requireActiveSubscriptionForWrites(req, res, next) {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") return next();
+  return requireActiveSubscription(req, res, next);
+}
+
 // Helper to serialize a facility for client.
 //
 // `subscriptionTier` reports the tier the client should actually gate on
@@ -135,11 +145,42 @@ export function serializeFacility(f) {
     logoEmoji: f.logoEmoji,
     address: f.address,
     phone: f.phone,
+    email: f.email || null,
     subscriptionTier: effective.key,
     storedTier: effective.storedTier,
     subscriptionEndsAt: f.subscriptionEndsAt || null,
+    trialEndsAt: f.trialEndsAt || null,
     subscriptionExpired: !!effective.expired,
+    onTrial: !!effective.onTrial,
+    readOnly: !!effective.readOnly,
     suspended: !!f.suspended,
     onboarded: f.onboarded ?? true,
   };
+}
+
+// Block writes for a clinic whose subscription has lapsed.
+//
+// The data is left completely intact and reads stay open, so the owner can sign
+// in, see their reports and settle the bill — but the business cannot keep
+// trading (and keep collecting value) on an unpaid account. Applied to the
+// write-heavy routers rather than every route, since a lapsed clinic reading its
+// own data is exactly what makes renewal possible.
+export async function requireActiveSubscription(req, res, next) {
+  try {
+    const facility = await prisma.facility.findUnique({ where: { id: req.user.facilityId } });
+    if (!facility) return res.status(404).json({ error: "Clinic not found" });
+    const effective = getEffectiveTier(facility);
+    if (effective.readOnly) {
+      return res.status(402).json({
+        error: facility.suspended
+          ? "This account is suspended. Please contact ClinicSync support."
+          : "Your subscription has expired. Renew your plan to continue.",
+        code: "SUBSCRIPTION_REQUIRED",
+        effectiveTier: effective.key,
+      });
+    }
+    next();
+  } catch (err) {
+    next(err);
+  }
 }

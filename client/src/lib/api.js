@@ -65,6 +65,30 @@ export async function login(facilityName, pinCode, remember = true) {
   return data;
 }
 
+// Owner sign-in with username + password instead of the facility+PIN pair.
+// `remember` is passed explicitly because the login screen asks the user; a
+// shared till device should not get a persistent session by default.
+export async function loginWithPassword(username, password, remember = false) {
+  const data = await apiFetch("/auth/login-password", {
+    method: "POST",
+    body: JSON.stringify({ username, password, remember }),
+  });
+  applyLoginResponse(data);
+  return data;
+}
+
+// Public self-service signup. The created session is applied immediately so the
+// owner lands straight in first-time setup rather than being asked to log in
+// again with credentials they just typed.
+export async function signupClinic(payload) {
+  const data = await apiFetch("/auth/signup", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  applyLoginResponse(data);
+  return data;
+}
+
 // Persist the tokens + session returned by the server (login or remember)
 export function applyLoginResponse(data) {
   setToken(data.token);

@@ -2,6 +2,9 @@ import { Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./context/AuthContext.jsx";
 
 import Login from "./pages/Login.jsx";
+import Landing from "./pages/Landing.jsx";
+import Signup from "./pages/Signup.jsx";
+import Billing from "./pages/Billing.jsx";
 import JoinPage from "./pages/JoinPage.jsx";
 import Setup from "./pages/Setup.jsx";
 import Dashboard from "./pages/Dashboard.jsx";
@@ -26,6 +29,17 @@ function Protected({ children }) {
   return <Layout>{children}</Layout>;
 }
 
+// Setup is a full-screen wizard rendered without the clinic <Layout>. It must
+// NOT use `Protected`: Protected sends un-onboarded facilities to /setup, which
+// on this route would redirect to itself and blank the page.
+function SetupRoute() {
+  const { session, ready } = useAuth();
+  if (!ready) return <div className="min-h-screen flex items-center justify-center text-slate-500">Loading…</div>;
+  if (!session) return <Navigate to="/login" replace />;
+  if (session.facility && session.facility.onboarded) return <Navigate to="/dashboard" replace />;
+  return <Setup />;
+}
+
 // Operator console: deliberately rendered outside the clinic <Layout> because
 // it manages many clinics, not the signed-in user's own. Access is enforced by
 // the server (SYS_ADMIN_IDS); the page itself just renders a notice on 403.
@@ -39,21 +53,26 @@ function AdminRoute() {
 export default function App() {
   return (
     <Routes>
+      {/* Public: marketing, pricing and self-service signup. The landing page
+          bounces signed-in users to their dashboard rather than showing a pitch. */}
+      <Route path="/" element={<Landing />} />
+      <Route path="/signup" element={<Signup />} />
       <Route path="/login" element={<Login />} />
       <Route path="/join" element={<JoinPage />} />
+      <Route path="/setup" element={<SetupRoute />} />
       <Route
-        path="/setup"
+        path="/dashboard"
         element={
           <Protected>
-            <Setup />
+            <Dashboard />
           </Protected>
         }
       />
       <Route
-        path="/"
+        path="/billing"
         element={
           <Protected>
-            <Dashboard />
+            <Billing />
           </Protected>
         }
       />

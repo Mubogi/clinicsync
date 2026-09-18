@@ -12,7 +12,7 @@ import {
   revokeAllRememberTokens,
   serializeFacility,
 } from "../auth.js";
-import { TIERS, getEffectiveTier, daysRemaining } from "../plans.js";
+import { TIERS, getEffectiveTier, daysRemaining, TRIAL_DAYS } from "../plans.js";
 import { serverError, cleanString } from "../http.js";
 
 const router = Router();
@@ -48,6 +48,81 @@ async function recordFailedLogin(facility) {
   }
   await prisma.facility.update({ where: { id: facility.id }, data });
 }
+
+// Username/password sign-in for owners, alongside the till's facility+PIN flow.
+//
+// Usernames are globally unique, so this endpoint does not need (and is not
+// told) which clinic the caller belongs to — that is what makes it usable from
+// the public landing page's "Sign in" button before any clinic is known.
+//
+// Unlike the PIN path there is no grace period: a password is typed on a private
+// device with autofill, so repeated failures are far more likely to be an attack
+// than a typo, and locking after 5 is appropriate.
+router.post("/login-password", loginLimiter, async (req, res) => {
+  try {
+    const { username, password, remember } = req.body;
+    const uname = cleanString(username, 100);
+    const pass = String(password ?? "");
+    if (!uname || !pass) {
+      return res.status(400).json({ error: "Username and password required" });
+    }
+    if (pass.length > 200) return res.status(400).json({ error: "Invalid credentials" });
+
+    const user = await prisma.user.findUnique({
+      where: { username: uname },
+      include: { facility: true },
+    });
+
+    // Identical response whether the username is unknown or the password is
+    // wrong, so this cannot be used to discover valid usernames.
+    const invalid = () => res.status(401).json({ error: "Invalid username or password" });
+    if (!user || !user.passwordHash) {
+      // Burn comparable time so response latency does not reveal whether the
+      // username exists: bcrypt only runs on a real hash, so an unknown user
+      // would otherwise answer visibly faster.
+      bcrypt.compareSync("timing-equalizer", "$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidinv");
+      return invalid();
+    }
+
+    if (user.facility.lockedUntil && user.facility.lockedUntil > new Date()) {
+      const mins = Math.max(1, Math.ceil((user.facility.lockedUntil - new Date()) / 60000));
+      return res.status(429).json({
+        error: `Too many failed attempts for this clinic. Try again in ${mins} minute${mins === 1 ? "" : "s"}.`,
+      });
+    }
+
+    if (!bcrypt.compareSync(pass, user.passwordHash)) {
+      await recordFailedLogin(user.facility);
+      return invalid();
+    }
+    if (!user.active) {
+      return res.status(403).json({ error: "This user account has been deactivated." });
+    }
+
+    if (user.facility.failedLoginAttempts > 0 || user.facility.lockedUntil) {
+      await prisma.facility.update({
+        where: { id: user.facility.id },
+        data: { failedLoginAttempts: 0, lockedUntil: null },
+      });
+    }
+
+    const token = signToken(user);
+    let rememberToken = null;
+    // Only mint a persistent token when explicitly asked: on a shared device an
+    // unrequested remember-me would leave the owner signed in indefinitely.
+    if (remember) {
+      rememberToken = await createRememberToken(user, user.facility.id);
+    }
+    res.json({
+      token,
+      rememberToken,
+      user: { id: user.id, name: user.name, role: user.role, facilityId: user.facilityId },
+      facility: serializeFacility(user.facility),
+    });
+  } catch (err) {
+    serverError(res, err);
+  }
+});
 
 // Login by facility name + PIN (optionally remember-me for persistent login)
 router.post("/login", loginLimiter, async (req, res) => {
@@ -386,6 +461,104 @@ router.patch("/facility/tier", requireAuth, requireRole("OWNER"), async (req, re
 // Public subscription plan catalogue (for the owner to pick a tier)
 router.get("/plans", (_req, res) => {
   res.json({ plans: TIERS });
+});
+
+// ----------  SELF-SERVICE SIGNUP  ----------
+// A pharmacy owner creates their own clinic from the landing page, without
+// waiting for a platform admin to onboard them.
+//
+// Deliberately public but tightly bounded: it creates exactly one facility plus
+// one OWNER, always on BASIC with a fixed-length trial, and ignores any tier the
+// caller asks for. Letting the body pick a tier would be a free upgrade to PRO;
+// letting it set the trial length would be free access forever. Upgrades happen
+// only through a payment request an admin approves.
+router.post("/signup", async (req, res) => {
+  try {
+    const facilityName = cleanString(req.body?.facilityName, 150);
+    const ownerName = cleanString(req.body?.ownerName, 100);
+    const username = cleanString(req.body?.username, 60)?.toLowerCase();
+    const password = String(req.body?.password ?? "");
+    const email = cleanString(req.body?.email, 200);
+    const phone = cleanString(req.body?.phone, 32);
+
+    if (!facilityName || !ownerName || !username || !password) {
+      return res.status(400).json({ error: "Clinic name, your name, username and password are required." });
+    }
+    if (!/^[a-z0-9][a-z0-9._-]{2,59}$/.test(username)) {
+      return res.status(400).json({
+        error: "Username must be 3-60 characters: letters, numbers, dot, underscore or hyphen.",
+      });
+    }
+    if (password.length < 8) {
+      return res.status(400).json({ error: "Password must be at least 8 characters." });
+    }
+
+    const clash = await prisma.user.findUnique({ where: { username } });
+    if (clash) return res.status(409).json({ error: "That username is already taken." });
+    const nameClash = await prisma.facility.findUnique({ where: { name: facilityName } });
+    if (nameClash) {
+      return res.status(409).json({ error: "A clinic with that name is already registered." });
+    }
+
+    const ownerPin = String(req.body?.ownerPin || "").trim();
+    if (!/^\d{4,8}$/.test(ownerPin)) {
+      return res.status(400).json({ error: "Till PIN must be 4-8 digits." });
+    }
+    if (/^(\d)\1+$/.test(ownerPin) || ["1234", "0000", "1111", "0123"].includes(ownerPin)) {
+      return res.status(400).json({ error: "That till PIN is too easy to guess. Please choose another." });
+    }
+
+    const slugBase = facilityName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 60) || "clinic";
+    // Slug is unique in the schema, so a duplicate name that differs only in
+    // punctuation would otherwise fail the insert outright.
+    let slug = slugBase;
+    for (let i = 0; i < 5 && (await prisma.facility.findUnique({ where: { slug } })); i++) {
+      slug = `${slugBase}-${Math.random().toString(36).slice(2, 6)}`;
+    }
+
+    const trialEndsAt = new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000);
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const pinHash = await bcrypt.hash(ownerPin, 10);
+
+    const facility = await prisma.facility.create({
+      data: {
+        name: facilityName,
+        slug,
+        brandName: facilityName,
+        phone,
+        email,
+        subscriptionTier: "BASIC",
+        trialEndsAt,
+        onboarded: false, // routed through first-time setup on first login
+        users: {
+          create: {
+            name: ownerName,
+            role: "OWNER",
+            username,
+            passwordHash,
+            pinCode: pinHash,
+          },
+        },
+      },
+      include: { users: true },
+    });
+
+    const owner = facility.users[0];
+    const token = signToken(owner);
+    res.status(201).json({
+      token,
+      user: { id: owner.id, name: owner.name, role: owner.role, facilityId: owner.facilityId },
+      facility: serializeFacility(facility),
+      trialEndsAt,
+    });
+  } catch (err) {
+    serverError(res, err);
+  }
 });
 
 // ----------  FIRST-TIME SETUP  ----------

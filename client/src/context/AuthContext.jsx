@@ -4,6 +4,8 @@ import {
   setSession,
   apiFetch,
   login as apiLogin,
+  loginWithPassword as apiLoginWithPassword,
+  signupClinic as apiSignupClinic,
   logout as apiLogout,
   applyLoginResponse,
   tryRememberLogin,
@@ -73,6 +75,18 @@ export function AuthProvider({ children }) {
     return data;
   }, []);
 
+  const loginPassword = useCallback(async (username, password, remember = false) => {
+    const data = await apiLoginWithPassword(username, password, remember);
+    setSessionState({ user: data.user, facility: data.facility });
+    return data;
+  }, []);
+
+  const signup = useCallback(async (payload) => {
+    const data = await apiSignupClinic(payload);
+    setSessionState({ user: data.user, facility: data.facility });
+    return data;
+  }, []);
+
   // `hard` = revoke remember-me and clear device (deliberate, hard logout)
   const logout = useCallback(async ({ hard = false } = {}) => {
     await apiLogout({ hard });
@@ -89,7 +103,7 @@ export function AuthProvider({ children }) {
 
   return (
     <AuthContext.Provider
-      value={{ session, setSession: setSessionState, login, logout, refreshSession, ready }}
+      value={{ session, setSession: setSessionState, login, loginPassword, signup, logout, refreshSession, ready }}
     >
       {children}
     </AuthContext.Provider>

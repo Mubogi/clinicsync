@@ -78,24 +78,28 @@ Pricing is defined in `server/src/plans.js`. Current tiers:
 
 | Tier | Price | Users | Products | Facilities |
 | --- | --- | --- | --- | --- |
-| BASIC | UGX 0 | 1 | 50 | 1 |
-| PREMIUM | UGX 25,000 / mo | 3 | 500 | 1 |
-| PRO | UGX 75,000 / mo | 50 | unlimited | 50 |
+| BASIC | UGX 20,000 / mo | 2 (owner + 1) | 100 | 1 |
+| PREMIUM | UGX 40,000 / mo | 5 (owner + 4) | 800 | 1 |
+| PRO | UGX 75,000 / mo | 50 | 5,000 | 50 |
+
+Every tier is paid. A new clinic gets a 14-day trial of BASIC, then drops to
+the non-purchasable LAPSED state until it pays. LAPSED is read-only and keeps a
+single seat so the owner can still sign in and settle the bill.
 
 The sales loop:
 
-1. Clinic self-registers and lands on BASIC automatically. It cannot upgrade
-   itself; paid tiers are requested, not granted.
-2. Owner taps **Request upgrade** in Settings and pays by mobile money, cash,
-   or bank transfer out of band.
-3. Operator opens `/admin`, finds the clinic, clicks **Billing**, picks the
-   tier and number of months, records the amount and a reference note, and
-   clicks **Activate / extend**. The clinic has the tier immediately.
+1. Clinic self-registers and starts a BASIC trial automatically. It cannot
+   upgrade itself; paid tiers are requested, not granted.
+2. Owner opens **Billing**, picks a tier and month count, and submits a payment
+   claim with the mobile-money transaction ID.
+3. Operator opens `/admin`, checks the transaction ID against the till
+   statement, and clicks **Approve**. The clinic has the tier immediately.
 
-Renewals extend from the existing end date rather than replacing it, so a
-clinic that pays early never loses the days it already paid for.
+Renewals extend from whichever is later — the existing paid end date or any
+remaining trial days — so a clinic that pays early never loses time it already
+has.
 
-When a subscription lapses, the clinic drops to BASIC automatically after a
+When a subscription lapses, the clinic drops to LAPSED automatically after a
 3-day grace window. Suspension is the harder stop: it locks the clinic out
 immediately and shows the reason you type, which is what you want when a
 payment bounces or terms are breached.
@@ -107,10 +111,11 @@ payment bounces or terms are breached.
 | Sell the hosted service | You run the server; clinics pay monthly per facility. | Recurring revenue, but you own uptime and support. |
 | Sell to an operator | A distributor buys a PRO plan and resells to shops. | Fewer customers to support, thinner margin. |
 | Sell the source once | One-time payment for the code, per-deployment. | No recurring revenue, no ongoing relationship. |
-| Freemium funnel | Free BASIC forever, paid upgrade when they hit the seat or product cap. | Needs volume; the caps already do this work. |
+| Tiered subscription | Free 14-day BASIC trial, then UGX 20,000/mo for the entry plan; PREMIUM and PRO add seats, auto-sync and branches. | Needs volume at the low end; the seat and product caps do this work. |
+| Annual prepay | Clinics pay 12 months up front for a discount. | Cash sooner, but a discount to fund. |
 
-The in-app gating is the enforcement mechanism for all four: BASIC's one-seat
-and fifty-product limits are what make the upgrade worth paying for. Without a
+The in-app gating is the enforcement mechanism for all four: BASIC's two-seat
+and hundred-product limits are what make an upgrade worth paying for. Without a
 payment processor wired in, collection is manual — which is normal for a
 mobile-money market and is exactly what the admin console supports today.
 

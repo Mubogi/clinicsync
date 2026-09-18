@@ -19,7 +19,7 @@ ClinicSync runs **offline-first**: all reads/writes hit the browser's local data
 | 📊 **End-of-Day Balance Sheet** | One-click reconciliation: gross revenue, total expenses, MTN/Airtel mobile-money received separately, expected cash at hand (cash revenue − cash expenses), wholesale restock spend ("Drugs Bought")); lock-shift button finalizes the books. |
 | 📦 **Inventory & Reorder** | Stock levels per unit type; FEFO (First-Expire-First-Out) batch expiry management; reorder-level alerts (Premium+. |
 | ☁️ **Offline-First Sync** | PouchDB local-first writes with `sync_status` flags; delta sync worker pushes unsynced rows and pulls cloud updates when online; Last-Write-Wins conflict handling. |
-| 👥 **Tiered SaaS** | Basic: single-counter POS + manual daily sync + expense log. Premium: continuous auto-sync + reorder alerts + FEFO batch expiry. Pro: remote multi-branch owner portal + advanced financial audits. |
+| Tiered SaaS | Basic (paid): single-counter POS + manual daily sync + expense log, 2 seats. Premium: continuous auto-sync + reorder alerts + FEFO batch expiry, 5 seats. Pro: remote multi-branch owner portal + advanced financial audits, 50 seats. |
 | 🖥️ **Remote Owner Portal** | Pro-tier dashboard for owners to log in from any PC/phone and view synced real-time performance across branches. |
 
 ## Tech stack

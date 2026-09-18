@@ -55,18 +55,18 @@ export const TIERS = {
     label: "Basic",
     color: "#64748b",
     colorBadge: "bg-slate-100 text-slate-700",
-    priceUgx: 0,
-    maxUsers: 1,
-    maxProducts: 50,
+    priceUgx: 20000,
+    maxUsers: 2,
+    maxProducts: 100,
     maxFacilities: 1,
     autoSync: false,
-    tagline: "Free forever · perfect to try ClinicSync",
+    tagline: "For a single-counter drug shop getting started",
     features: [
       "POS with thermal receipts",
       "Expense tracking",
       "End-of-day reconciliation",
       "Offline-first (PouchDB)",
-      "1 cashier seat",
+      "2 user seats (owner + 1 staff)",
     ],
     whatsMissing: [
       "No extra staff seats",
@@ -79,16 +79,16 @@ export const TIERS = {
     label: "Premium",
     color: "#f59e0b",
     colorBadge: "bg-amber-100 text-amber-700",
-    priceUgx: 25000,
-    maxUsers: 3,
-    maxProducts: 500,
+    priceUgx: 40000,
+    maxUsers: 5,
+    maxProducts: 800,
     maxFacilities: 1,
     autoSync: true,
     tagline: "For a growing shop with staff",
     popular: true,
     features: [
       "Everything in Basic",
-      "3 user seats (owner + 2 staff)",
+      "5 user seats (owner + 4 staff)",
       "Automatic background sync",
       "Reorder & low-stock alerts",
       "FEFO batch expiry tracking",
@@ -119,6 +119,33 @@ export const TIERS = {
     whatsMissing: [],
   },
 };
+
+// Non-purchasable state shown when a paid period has expired. Kept out of TIERS
+// so it can never be chosen as a plan; read-only so the owner can still sign in
+// and renew without their data being touched.
+export const LAPSED = {
+  label: "Lapsed",
+  color: "#dc2626",
+  colorBadge: "bg-red-100 text-red-700",
+  priceUgx: 0,
+  maxUsers: 1,
+  maxProducts: 0,
+  maxFacilities: 1,
+  autoSync: false,
+  readOnly: true,
+  tagline: "Subscription expired — renew to restore full access",
+  features: ["Sign in and view existing reports", "Renew your subscription"],
+  whatsMissing: [
+    "Recording sales is paused",
+    "Adding stock or staff is paused",
+    "Automatic sync is paused",
+  ],
+};
+
+// Resolve display metadata for whatever the server said the effective tier is.
+// Unknown keys fall back to LAPSED rather than BASIC: showing a lapsed clinic as
+// a working Basic plan would advertise features the API is refusing.
+export const tierMeta = (key) => TIERS[key] || LAPSED;
 
 // Role labels + colors used to visually distinguish users
 export const ROLES = {

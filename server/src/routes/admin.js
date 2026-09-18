@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 
 import { prisma } from "../db.js";
 import { requireAuth, serializeFacility } from "../auth.js";
-import { TIERS, getEffectiveTier, daysRemaining } from "../plans.js";
+import { TIERS, getEffectiveTier, daysRemaining, tierPrice } from "../plans.js";
 import { SYS_ADMIN_IDS } from "../config.js";
 import { serverError, cleanString } from "../http.js";
 
@@ -95,16 +95,19 @@ router.get("/facilities", requireAuth, requireAdmin, async (_req, res) => {
 router.post("/facilities/:id/subscription", requireAuth, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { tier, months = 1, amountUgx = 0, note } = req.body;
+    const { tier, months = 1, note } = req.body;
 
-    if (!TIERS[tier] || tier === "BASIC") {
-      return res.status(400).json({ error: "tier must be PREMIUM or PRO" });
+    if (!TIERS[tier]) {
+      return res.status(400).json({ error: "Unknown plan" });
     }
     const m = Number(months);
     if (!Number.isInteger(m) || m < 1 || m > 36) {
       return res.status(400).json({ error: "months must be a whole number between 1 and 36" });
     }
-    const amount = Number(amountUgx);
+    // Default to the catalogue price rather than 0. BASIC is now a paid tier, so
+    // an omitted amount previously meant a free month recorded as a payment —
+    // silently under-reporting revenue and hiding a billing mistake.
+    const amount = req.body.amountUgx == null ? tierPrice(tier, m) : Number(req.body.amountUgx);
     if (!Number.isFinite(amount) || amount < 0) {
       return res.status(400).json({ error: "amountUgx must be a non-negative number" });
     }
@@ -113,10 +116,15 @@ router.post("/facilities/:id/subscription", requireAuth, requireAdmin, async (re
     if (!facility) return res.status(404).json({ error: "Not found" });
 
     const now = new Date();
-    const base =
-      facility.subscriptionEndsAt && facility.subscriptionEndsAt > now
-        ? facility.subscriptionEndsAt
-        : now;
+    // Same rule as claim approval: extend from the furthest point already paid
+    // for (paid period or remaining trial), so granting early never burns days.
+    const paidUntil = facility.subscriptionEndsAt && facility.subscriptionEndsAt > now
+      ? facility.subscriptionEndsAt
+      : null;
+    const trialUntil = facility.trialEndsAt && facility.trialEndsAt > now
+      ? facility.trialEndsAt
+      : null;
+    const base = [paidUntil, trialUntil].filter(Boolean).sort((a, b) => b - a)[0] || now;
     const periodEnd = addMonths(base, m);
 
     const [updated, payment] = await prisma.$transaction([
@@ -268,26 +276,154 @@ router.get("/overview", requireAuth, requireAdmin, async (_req, res) => {
     const now = Date.now();
     let activePaying = 0;
     let lapsed = 0;
+    let trial = 0;
     let mrrUgx = 0;
     for (const f of facilities) {
       const eff = getEffectiveTier(f);
-      const stored = eff.storedTier;
-      if (stored === "BASIC") continue;
-      if (eff.expired || f.suspended) {
+      if (eff.onTrial) trial += 1;
+      if (eff.readOnly) {
         lapsed += 1;
         continue;
       }
+      // Every tier is billable now, so BASIC counts toward MRR too — the old
+      // `if (stored === "BASIC") continue` skipped it as a free plan and would
+      // understate revenue by every entry-level clinic.
       activePaying += 1;
-      mrrUgx += TIERS[stored]?.priceUgx || 0;
+      mrrUgx += TIERS[eff.storedTier]?.priceUgx || 0;
     }
-    const payments = await prisma.payment.findMany({ select: { amountUgx: true } });
+    const [pendingRequests, collectedAgg] = await Promise.all([
+      prisma.paymentRequest.count({ where: { status: "PENDING" } }),
+      prisma.payment.aggregate({ _sum: { amountUgx: true } }),
+    ]);
     res.json({
       facilityCount: facilities.length,
       activePaying,
       lapsed,
+      trial,
+      pendingRequests,
       mrrUgx,
-      collectedUgx: payments.reduce((s, p) => s + p.amountUgx, 0),
+      collectedUgx: collectedAgg._sum.amountUgx || 0,
       generatedAt: new Date(now).toISOString(),
+    });
+  } catch (err) {
+    serverError(res, err);
+  }
+});
+
+// Payment claims awaiting verification, oldest first so nobody is left waiting
+// behind a queue of newer submissions.
+router.get("/payment-requests", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const status = String(req.query.status || "PENDING").toUpperCase();
+    const where = ["PENDING", "APPROVED", "REJECTED"].includes(status) ? { status } : {};
+    const rows = await prisma.paymentRequest.findMany({
+      where,
+      orderBy: { createdAt: "asc" },
+      take: 200,
+      include: { facility: { select: { id: true, name: true, phone: true, email: true } } },
+    });
+    res.json(rows);
+  } catch (err) {
+    serverError(res, err);
+  }
+});
+
+// Approve a claimed payment: this is the step that actually starts the paid
+// period. Approving reuses the same period-extension logic as a manual grant, so
+// a clinic that renews early keeps its remaining days instead of losing them.
+router.post("/payment-requests/:id/approve", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const claim = await prisma.paymentRequest.findUnique({ where: { id: req.params.id } });
+    if (!claim) return res.status(404).json({ error: "Payment request not found" });
+    if (claim.status !== "PENDING") {
+      return res.status(409).json({ error: `This request was already ${claim.status.toLowerCase()}.` });
+    }
+
+    const facility = await prisma.facility.findUnique({ where: { id: claim.facilityId } });
+    if (!facility) return res.status(404).json({ error: "Clinic not found" });
+
+    const now = new Date();
+    // Extend from the furthest point the clinic has already paid for: an active
+    // paid period, else remaining trial days, else today. Ignoring the trial
+    // would silently burn the free days a clinic still had left.
+    const paidUntil = facility.subscriptionEndsAt && facility.subscriptionEndsAt > now
+      ? facility.subscriptionEndsAt
+      : null;
+    const trialUntil = facility.trialEndsAt && facility.trialEndsAt > now
+      ? facility.trialEndsAt
+      : null;
+    const base = [paidUntil, trialUntil].filter(Boolean).sort((a, b) => b - a)[0] || now;
+    const periodEnd = addMonths(base, claim.months);
+    const amount = claim.amountUgx || tierPrice(claim.requestedTier, claim.months);
+
+    const [updated, payment, request] = await prisma.$transaction([
+      prisma.facility.update({
+        where: { id: facility.id },
+        data: {
+          subscriptionTier: claim.requestedTier,
+          subscriptionEndsAt: periodEnd,
+          trialEndsAt: null,
+          suspended: false,
+          suspendedReason: null,
+        },
+      }),
+      prisma.payment.create({
+        data: {
+          facilityId: facility.id,
+          tier: claim.requestedTier,
+          months: claim.months,
+          amountUgx: amount,
+          note: `Verified ${claim.method} txn ${claim.transactionRef}`,
+          periodStart: base,
+          periodEnd,
+          recordedBy: req.user.sub,
+        },
+      }),
+      prisma.paymentRequest.update({
+        where: { id: claim.id },
+        data: { status: "APPROVED", reviewedBy: req.user.sub, reviewedAt: now },
+      }),
+    ]);
+
+    res.json({ facility: serializeFacility(updated), payment, request });
+    await audit(req, "PAYMENT_APPROVE", {
+      facilityId: facility.id,
+      targetId: claim.id,
+      detail: `${claim.requestedTier} ${claim.months}mo, ${claim.method} ${claim.transactionRef}, UGX ${amount}`,
+    });
+  } catch (err) {
+    serverError(res, err);
+  }
+});
+
+// Reject a claim that cannot be matched against the till statement. The clinic
+// keeps working if its subscription is otherwise valid, so a typo in a
+// transaction ID is not treated as non-payment.
+router.post("/payment-requests/:id/reject", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const reason = cleanString(req.body?.reason, 240);
+    if (!reason) return res.status(400).json({ error: "A reason is required so the clinic can be told why." });
+
+    const claim = await prisma.paymentRequest.findUnique({ where: { id: req.params.id } });
+    if (!claim) return res.status(404).json({ error: "Payment request not found" });
+    if (claim.status !== "PENDING") {
+      return res.status(409).json({ error: `This request was already ${claim.status.toLowerCase()}.` });
+    }
+
+    const request = await prisma.paymentRequest.update({
+      where: { id: claim.id },
+      data: {
+        status: "REJECTED",
+        reviewedBy: req.user.sub,
+        reviewedAt: new Date(),
+        rejectionReason: reason,
+      },
+    });
+    res.json(request);
+    await audit(req, "PAYMENT_REJECT", {
+      facilityId: claim.facilityId,
+      targetId: claim.id,
+      detail: reason,
     });
   } catch (err) {
     serverError(res, err);

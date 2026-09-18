@@ -4,6 +4,8 @@ import bcrypt from "bcryptjs";
 const FACILITY_NAME = process.env.SEED_FACILITY_NAME || "Mubogi Pharmacy (Demo)";
 const OWNER_PIN = process.env.SEED_OWNER_PIN || "1234";
 const CASHIER_PIN = process.env.SEED_CASHIER_PIN || "2345";
+const OWNER_USERNAME = (process.env.SEED_OWNER_USERNAME || "owner").toLowerCase();
+const OWNER_PASSWORD = process.env.SEED_OWNER_PASSWORD || "demo-password";
 
 const slug = (s) =>
   s
@@ -111,6 +113,7 @@ async function main() {
   const ownerPinHash = await bcrypt.hash(OWNER_PIN, 10);
   const cashierPinHash = await bcrypt.hash(CASHIER_PIN, 10);
   const pharmacistPinHash = await bcrypt.hash("3456", 10);
+  const ownerPasswordHash = await bcrypt.hash(OWNER_PASSWORD, 10);
 
   await prisma.facility.upsert({
     where: { id: "demo-facility-01" },
@@ -121,6 +124,7 @@ async function main() {
       address: "Kampala, Uganda",
       phone: "+256 754 687 597",
       subscriptionTier: "PRO",
+      email: process.env.SEED_OWNER_EMAIL || "owner@example.com",
     },
     create: {
       id: "demo-facility-01",
@@ -131,14 +135,43 @@ async function main() {
       address: "Kampala, Uganda",
       phone: "+256 754 687 597",
       subscriptionTier: "PRO",
+      email: process.env.SEED_OWNER_EMAIL || "owner@example.com",
       onboarded: true,
       users: {
         create: [
-          { id: "demo-user-owner", name: "Mubogi (Owner)", role: "OWNER", pinCode: ownerPinHash },
+          {
+            id: "demo-user-owner",
+            name: "Mubogi (Owner)",
+            role: "OWNER",
+            pinCode: ownerPinHash,
+            username: OWNER_USERNAME,
+            passwordHash: ownerPasswordHash,
+          },
           { id: "demo-user-cashier", name: "Amina (Cashier)", role: "CASHIER", pinCode: cashierPinHash },
           { id: "demo-user-pharmacist", name: "Dr. Sarah (Pharmacist)", role: "PHARMACIST", pinCode: pharmacistPinHash },
         ],
       },
+    },
+  });
+
+  // Upsert the owner's login separately: nested `users.create` only runs on
+  // insert, so a re-seed against an existing demo facility would otherwise leave
+  // the username/password unset and password login unusable.
+  await prisma.user.upsert({
+    where: { id: "demo-user-owner" },
+    update: {
+      username: OWNER_USERNAME,
+      passwordHash: ownerPasswordHash,
+      pinCode: ownerPinHash,
+    },
+    create: {
+      id: "demo-user-owner",
+      facilityId: "demo-facility-01",
+      name: "Mubogi (Owner)",
+      role: "OWNER",
+      username: OWNER_USERNAME,
+      passwordHash: ownerPasswordHash,
+      pinCode: ownerPinHash,
     },
   });
 
@@ -199,6 +232,7 @@ async function main() {
 
   console.log("Seed complete: %s", FACILITY_NAME);
   console.log("Owner PIN: %s | Cashier PIN: %s | Pharmacist PIN: 3456", OWNER_PIN, CASHIER_PIN);
+  console.log("Owner login: %s / %s", OWNER_USERNAME, OWNER_PASSWORD);
 }
 
 main()

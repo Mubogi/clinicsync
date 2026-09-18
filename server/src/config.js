@@ -52,3 +52,17 @@ export const SYS_ADMIN_IDS = (process.env.SYS_ADMIN_IDS || "")
   .filter(Boolean);
 
 export const BACKUP_RETENTION_DAYS = Number(process.env.BACKUP_RETENTION_DAYS || 400);
+
+// Where clinics send subscription money. All ClinicSync revenue is collected on
+// the JD Hub merchant till, so these are the platform's own details rather than
+// per-clinic ones. Defaults reflect the live till; override via env so the
+// number can change without a redeploy of the client.
+export const COLLECTION = {
+  payeeName: process.env.PAYMENT_PAYEE_NAME || "JD Hub",
+  airtelName: process.env.PAYMENT_AIRTEL_NAME || "JD Hub",
+  airtelNumber: process.env.PAYMENT_AIRTEL_NUMBER || "7216334",
+  mtnName: process.env.PAYMENT_MTN_NAME || "JD Hub",
+  mtnNumber: process.env.PAYMENT_MTN_NUMBER || "256754687597",
+  networkLabel: process.env.PAYMENT_NETWORK_LABEL || "Airtel Money",
+  whatsapp: process.env.PAYMENT_WHATSAPP || "256754687597",
+};

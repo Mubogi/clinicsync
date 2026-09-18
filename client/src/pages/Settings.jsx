@@ -24,6 +24,7 @@ import {
   Save,
   RotateCcw,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 import { apiFetch } from "../lib/api.js";
 import { ROLES, roleMeta, TIERS, fmtDate, cx } from "../lib/utils.js";
@@ -679,7 +680,7 @@ export default function Settings() {
                     {isCurrent && <CheckCircle2 size={16} className="text-emerald-600" />}
                   </div>
                   <div className="text-[11px] text-slate-500 mt-1">
-                    UGX {v.priceUgx === 0 ? "0 / mo" : `${Math.round(v.priceUgx / 1000)}k / mo`} · {v.maxUsers} user{v.maxUsers > 1 ? "s" : ""} · {v.maxProducts === 5000 ? "∞" : v.maxProducts} products
+                    UGX {v.priceUgx.toLocaleString("en-UG")} / mo · {v.maxUsers} user{v.maxUsers > 1 ? "s" : ""} · {v.maxProducts === 5000 ? "∞" : v.maxProducts} products
                   </div>
                   <div className="text-[10px] text-slate-400 mt-1">{v.tagline}</div>
                   <ul className="mt-3 space-y-1">
@@ -692,51 +693,15 @@ export default function Settings() {
                       <li className="text-[10px] text-slate-400 pt-1 italic">Missing: {v.whatsMissing.join(" · ")}</li>
                     )}
                   </ul>
-                  {!isCurrent && k !== "BASIC" && (
-                    <div className="mt-3">
-                      <a
-                        href={`https://wa.me/256754687597?text=${encodeURIComponent(
-                          `Hello ClinicSync, I would like to upgrade ${session?.facility?.brandName || "my clinic"} to the ${v.label} plan.`
-                        )}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="w-full flex items-center justify-center gap-1.5 text-white text-sm font-medium py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700"
-                      >
-                        <MessageCircle size={14} /> Request upgrade
-                      </a>
-                      <p className="text-[10px] text-slate-400 mt-1.5 text-center">
-                        Activated after payment is confirmed
-                      </p>
-                    </div>
-                  )}
-                  {!isCurrent && k === "BASIC" && (
-                    <button
-                      onClick={async () => {
-                        try {
-                          setBusy(true);
-                          const updated = await apiFetch("/auth/facility/tier", {
-                            method: "PATCH",
-                            body: JSON.stringify({ subscriptionTier: "BASIC" }),
-                          });
-                          session.facility = updated;
-                          window.localStorage.setItem(
-                            "clinicsync_session",
-                            JSON.stringify({ user: session.user, facility: updated })
-                          );
-                          window.dispatchEvent(new Event("clinicSync:facility-updated"));
-                          flash(true, "Switched to the Basic plan.");
-                          loadUsers();
-                        } catch (e) {
-                          flash(false, e.message);
-                        } finally {
-                          setBusy(false);
-                        }
-                      }}
-                      className="mt-3 w-full text-sm font-medium py-2 rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                      disabled={busy}
+                  {/* Paid tiers are not self-service: the owner submits a
+                      mobile-money claim and the platform admin approves it. */}
+                  {!isCurrent && (
+                    <Link
+                      to="/billing"
+                      className="mt-3 w-full flex items-center justify-center gap-1.5 text-sm font-medium py-2 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50"
                     >
-                      Downgrade to Basic
-                    </button>
+                      <MessageCircle size={14} /> {k === "BASIC" ? "Switch to Basic" : "Upgrade"}
+                    </Link>
                   )}
                   {isCurrent && (
                     <div className="mt-3 w-full text-center text-[11px] font-medium text-emerald-600 py-2 border border-emerald-300 rounded-lg">Current plan</div>

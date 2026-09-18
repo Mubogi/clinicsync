@@ -8,7 +8,7 @@ import fs from "node:fs";
 
 import { PORT, CORS_ORIGINS, IS_PROD } from "./config.js";
 import { prisma } from "./db.js";
-import { requireAuth } from "./auth.js";
+import { requireAuth, requireActiveSubscriptionForWrites } from "./auth.js";
 
 import authRoutes from "./routes/auth.js";
 import inventoryRoutes from "./routes/inventory.js";
@@ -23,6 +23,7 @@ import teamRoutes, { joinHandler as teamJoinHandler } from "./routes/team.js";
 import approvalRoutes from "./routes/approvals.js";
 import libraryRoutes from "./routes/library.js";
 import backupRoutes from "./routes/backups.js";
+import billingRoutes from "./routes/billing.js";
 import { runMonthlyBackups } from "./backup.js";
 import { serverError } from "./http.js";
 
@@ -90,12 +91,12 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.use("/api/auth", authRoutes);
-app.use("/api/inventory", requireAuth, inventoryRoutes);
-app.use("/api/products", requireAuth, productRoutes);
-app.use("/api/sales", requireAuth, saleRoutes);
-app.use("/api/expenses", requireAuth, expenseRoutes);
-app.use("/api/reconciliation", requireAuth, reconciliationRoutes);
-app.use("/api/sync", requireAuth, syncRoutes);
+app.use("/api/inventory", requireAuth, requireActiveSubscriptionForWrites, inventoryRoutes);
+app.use("/api/products", requireAuth, requireActiveSubscriptionForWrites, productRoutes);
+app.use("/api/sales", requireAuth, requireActiveSubscriptionForWrites, saleRoutes);
+app.use("/api/expenses", requireAuth, requireActiveSubscriptionForWrites, expenseRoutes);
+app.use("/api/reconciliation", requireAuth, requireActiveSubscriptionForWrites, reconciliationRoutes);
+app.use("/api/sync", requireAuth, requireActiveSubscriptionForWrites, syncRoutes);
 app.use("/api/dashboard", requireAuth, dashboardRoutes);
 app.use("/api/admin", requireAuth, adminRoutes);
 app.use("/api/backups", requireAuth, backupRoutes);
@@ -105,6 +106,8 @@ app.post("/api/team/join", teamJoinHandler);
 app.use("/api/team", requireAuth, teamRoutes);
 app.use("/api/approvals", requireAuth, approvalRoutes);
 app.use("/api/library", libraryRoutes);
+// Public pricing/till details (`/config`, `/quote`) plus owner payment claims.
+app.use("/api/billing", billingRoutes);
 
 // Serve built client in production
 const clientDist = path.join(__dirname, "..", "..", "client", "dist");

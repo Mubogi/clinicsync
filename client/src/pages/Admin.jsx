@@ -14,6 +14,7 @@ import {
   TrendingUp,
   UserX,
   UserCheck,
+  Clock,
 } from "lucide-react";
 import { apiFetch } from "../lib/api.js";
 import { TIERS, fmtShortMoney, fmtDate, cx } from "../lib/utils.js";
@@ -36,18 +37,22 @@ export default function Admin() {
   const [openId, setOpenId] = useState(null);
   const [payments, setPayments] = useState({});
   const [staff, setStaff] = useState({});
-  const [form, setForm] = useState({ tier: "PREMIUM", months: 1, amountUgx: "", note: "" });
+  // BASIC is a paid tier, so it is a valid target — no longer coerced to PREMIUM.
+  const [form, setForm] = useState({ tier: "BASIC", months: 1, amountUgx: "", note: "" });
+  const [claims, setClaims] = useState([]);
 
   async function load() {
     setBusy(true);
     setErr("");
     try {
-      const [fs, ov] = await Promise.all([
+      const [fs, ov, cr] = await Promise.all([
         apiFetch("/admin/facilities"),
         apiFetch("/admin/overview"),
+        apiFetch("/admin/payment-requests?status=PENDING"),
       ]);
       setFacilities(fs);
       setOverview(ov);
+      setClaims(cr);
       setNotEnabled(false);
     } catch (e) {
       if (/not enabled|Platform admin/i.test(e.message)) setNotEnabled(true);
@@ -66,9 +71,9 @@ export default function Admin() {
     setMsg("");
     setErr("");
     setForm({
-      tier: f.storedTier === "BASIC" ? "PREMIUM" : f.storedTier,
+      tier: TIERS[f.storedTier] ? f.storedTier : "BASIC",
       months: 1,
-      amountUgx: String(TIERS[f.storedTier === "BASIC" ? "PREMIUM" : f.storedTier]?.priceUgx || ""),
+      amountUgx: String(TIERS[f.storedTier]?.priceUgx || TIERS.BASIC.priceUgx),
       note: "",
     });
     try {
@@ -115,6 +120,8 @@ export default function Admin() {
     setErr("");
     setMsg("");
     try {
+      // Default the amount to the catalogue price so approving a verified claim
+      // cannot silently record zero revenue.
       const amount = Number(form.amountUgx) || 0;
       await apiFetch(`/admin/facilities/${id}/subscription`, {
         method: "POST",
@@ -149,6 +156,46 @@ export default function Admin() {
         body: JSON.stringify({ suspended, reason }),
       });
       setMsg(suspended ? "Clinic suspended." : "Clinic reactivated.");
+      await load();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function approveClaim(c) {
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      const res = await apiFetch(`/admin/payment-requests/${c.id}/approve`, { method: "POST" });
+      setMsg(
+        `Approved ${c.facility?.name} — ${TIERS[c.requestedTier]?.label || c.requestedTier} ` +
+          `active until ${fmtDate(res.facility.subscriptionEndsAt)}.`
+      );
+      await load();
+    } catch (e) {
+      setErr(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rejectClaim(c) {
+    const reason = window.prompt(
+      "Why is this payment being rejected? The clinic will see this."
+    );
+    if (!reason || !reason.trim()) return;
+    setBusy(true);
+    setErr("");
+    setMsg("");
+    try {
+      await apiFetch(`/admin/payment-requests/${c.id}/reject`, {
+        method: "POST",
+        body: JSON.stringify({ reason: reason.trim() }),
+      });
+      setMsg(`Rejected ${c.facility?.name}'s claim.`);
       await load();
     } catch (e) {
       setErr(e.message);
@@ -213,7 +260,12 @@ export default function Admin() {
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Stat label="Clinics" value={overview.facilityCount} />
           <Stat label="Paying" value={overview.activePaying} tone="emerald" />
-          <Stat label="Lapsed" value={overview.lapsed} tone={overview.lapsed ? "amber" : undefined} />
+          <Stat
+            label="On trial"
+            value={overview.trial ?? 0}
+            sub={overview.pendingRequests ? `${overview.pendingRequests} claim(s) pending` : undefined}
+            tone={overview.pendingRequests ? "amber" : undefined}
+          />
           <Stat
             label="MRR"
             value={fmtShortMoney(overview.mrrUgx)}
@@ -221,6 +273,74 @@ export default function Admin() {
             tone="emerald"
             icon={<TrendingUp size={14} />}
           />
+        </div>
+      )}
+
+      {/* Claims are matched against the mobile-money statement, then approved
+          here. Until approved the clinic keeps working on trial/lapsed rules. */}
+      {claims.length > 0 && (
+        <div className="bg-white border border-amber-200 rounded-xl overflow-hidden">
+          <div className="px-4 py-3 bg-amber-50 border-b border-amber-200 flex items-center gap-2">
+            <Clock size={16} className="text-amber-700" />
+            <span className="font-semibold text-amber-900 text-sm">
+              Payment claims awaiting confirmation ({claims.length})
+            </span>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {claims.map((c) => (
+              <div key={c.id} className="p-4 flex items-start justify-between gap-4 flex-wrap">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-slate-900">{c.facility?.name}</span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 uppercase">
+                      {TIERS[c.requestedTier]?.label || c.requestedTier}
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-sky-100 text-sky-700 uppercase">
+                      {c.method}
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-600 mt-1.5 space-y-0.5">
+                    <div>
+                      Ref{" "}
+                      <code className="font-mono bg-slate-100 px-1 rounded">{c.transactionRef}</code>
+                      {" · "}
+                      <strong>{fmtShortMoney(c.amountUgx)}</strong> for {c.months} month
+                      {c.months === 1 ? "" : "s"}
+                    </div>
+                    <div className="text-slate-500">
+                      {c.payerName || "—"}
+                      {c.payerPhone ? ` · ${c.payerPhone}` : ""}
+                      {c.facility?.phone ? ` · clinic ${c.facility.phone}` : ""}
+                    </div>
+                    <div className="text-slate-400">
+                      Submitted {fmtDate(c.createdAt)}
+                      {c.note ? ` · "${c.note}"` : ""}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={() => approveClaim(c)}
+                    disabled={busy}
+                    className="text-sm bg-emerald-600 text-white rounded-lg px-3 py-1.5 hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <CheckCircle2 size={14} /> Approve
+                  </button>
+                  <button
+                    onClick={() => rejectClaim(c)}
+                    disabled={busy}
+                    className="text-sm border border-red-200 text-red-600 rounded-lg px-3 py-1.5 hover:bg-red-50 disabled:opacity-50 flex items-center gap-1.5"
+                  >
+                    <X size={14} /> Reject
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <p className="px-4 py-2.5 text-[11px] text-slate-500 bg-slate-50 border-t border-slate-100">
+            Check each transaction ID against the Airtel/MTN statement before approving. Approving
+            extends from the current period end, so early renewals never lose remaining days.
+          </p>
         </div>
       )}
 
@@ -319,11 +439,22 @@ export default function Admin() {
                     <Field label="Plan">
                       <select
                         value={form.tier}
-                        onChange={(e) => setForm({ ...form, tier: e.target.value })}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            tier: e.target.value,
+                            amountUgx: String(
+                              (TIERS[e.target.value]?.priceUgx || 0) * (Number(form.months) || 1)
+                            ),
+                          })
+                        }
                         className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white"
                       >
-                        <option value="PREMIUM">Premium</option>
-                        <option value="PRO">Pro</option>
+                        {Object.entries(TIERS).map(([k, t]) => (
+                          <option key={k} value={k}>
+                            {t.label} — {t.priceUgx.toLocaleString("en-UG")}/mo
+                          </option>
+                        ))}
                       </select>
                     </Field>
                     <Field label="Months">

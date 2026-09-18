@@ -89,7 +89,7 @@ export default function Setup() {
       setSession(updatedSession);
       window.localStorage.setItem("clinicsync_session", JSON.stringify(updatedSession));
       window.dispatchEvent(new Event("clinicSync:facility-updated"));
-      navigate("/", { replace: true });
+      navigate("/dashboard", { replace: true });
     } catch (e) {
       setError(e.message);
     } finally {
@@ -207,8 +207,9 @@ export default function Setup() {
             <div className="space-y-4">
               <h2 className="font-bold text-slate-900 text-lg">Choose a plan</h2>
               <p className="text-sm text-slate-500 -mt-2">
-                Start free on Basic. Paid plans are activated by ClinicSync once payment is
-                confirmed — request one from Settings whenever you're ready.
+                You start on a 14-day free trial of Basic. After the trial, Basic is{" "}
+                {fmtMoney(TIERS.BASIC.priceUgx)}/month — pay by mobile money from Billing.
+                Larger plans are activated by ClinicSync once payment is confirmed.
               </p>
               <div className="grid sm:grid-cols-3 gap-3">
                 {Object.entries(TIERS).map(([k, v]) => {
