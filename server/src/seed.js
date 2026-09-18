@@ -1,11 +1,33 @@
 import { prisma } from "./db.js";
 import bcrypt from "bcryptjs";
 
+const IS_PROD = process.env.NODE_ENV === "production";
+
+// Seeding is a demo/bootstrap convenience, not something to run against a live
+// database: it creates an owner whose credentials are known ahead of time.
+// In production require an explicit opt-in and real credentials, so a stray
+// `npm run prisma:seed` can never plant a publicly-known owner account.
+if (IS_PROD && process.env.SEED_ALLOW_IN_PRODUCTION !== "1") {
+  console.error(
+    "[seed] Refusing to seed with NODE_ENV=production. Seeding creates a known " +
+      "demo owner account. Set SEED_ALLOW_IN_PRODUCTION=1 if this is intentional."
+  );
+  process.exit(1);
+}
+
 const FACILITY_NAME = process.env.SEED_FACILITY_NAME || "Mubogi Pharmacy (Demo)";
-const OWNER_PIN = process.env.SEED_OWNER_PIN || "1234";
-const CASHIER_PIN = process.env.SEED_CASHIER_PIN || "2345";
+const OWNER_PIN = process.env.SEED_OWNER_PIN || (IS_PROD ? "" : "1234");
+const CASHIER_PIN = process.env.SEED_CASHIER_PIN || (IS_PROD ? "" : "2345");
 const OWNER_USERNAME = (process.env.SEED_OWNER_USERNAME || "owner").toLowerCase();
-const OWNER_PASSWORD = process.env.SEED_OWNER_PASSWORD || "demo-password";
+const OWNER_PASSWORD = process.env.SEED_OWNER_PASSWORD || (IS_PROD ? "" : "demo-password");
+
+if (IS_PROD && (!OWNER_PIN || !OWNER_PASSWORD)) {
+  console.error(
+    "[seed] SEED_OWNER_PIN and SEED_OWNER_PASSWORD must both be set when seeding " +
+      "a production database. The development defaults are not used in production."
+  );
+  process.exit(1);
+}
 
 const slug = (s) =>
   s

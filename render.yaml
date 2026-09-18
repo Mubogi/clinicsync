@@ -1,0 +1,44 @@
+# Render blueprint for ClinicSync.
+#
+# Single web service: the Express server serves the API *and* the built React
+# client from client/dist, so no separate static site or custom domain wiring is
+# needed. Same-origin requests also mean CORS does not have to be configured.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo.
+# After the first deploy, set the two secrets marked `sync: false`
+# (JWT_SECRET and SYS_ADMIN_IDS) in the dashboard, then redeploy.
+
+services:
+  - type: web
+    name: clinicsync
+    runtime: node
+    plan: starter
+    buildCommand: npm install --workspaces && npm run build -w client && npx prisma generate --schema server/prisma/schema.prisma
+    # migrate deploy is the production counterpart to migrate dev: it applies
+    # committed migrations without ever resetting or prompting.
+    startCommand: npx prisma migrate deploy --schema server/prisma/schema.prisma && npm start
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: clinicsync-db
+          property: connectionString
+      # Must be a strong random value (>= 32 chars) or the server refuses to
+      # boot in production. Generate with: openssl rand -hex 32
+      - key: JWT_SECRET
+        sync: false
+      # Comma-separated user ids allowed to open /admin. Get the id from
+      # /api/auth/me after signing in, paste it here. Empty disables the console.
+      - key: SYS_ADMIN_IDS
+        sync: false
+      - key: BACKUP_RETENTION_DAYS
+        value: "400"
+
+databases:
+  - name: clinicsync-db
+    databaseName: clinicsync
+    user: clinicsync
+    plan: basic-256mb
