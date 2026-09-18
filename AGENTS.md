@@ -45,9 +45,10 @@ A bare `node src/index.js` defaults to port 5000 and the preview URL will 502.
   `VITE_SHOW_DEMO_LOGINS=1`, so seeded credentials stay out of production bundles.
 - `.env` files and `server/prisma/*.db` are gitignored. Never commit them.
 
-## Known blocker
+## Pushing
 
-Pushing to `github.com/Mubogi/clinicsync` fails with HTTP 403: the available
-`GITHUB_TOKEN` authenticates as `Arnoldmula`, which has read-only (`pull`)
-access to that repo. A push requires a token/account with write access, or the
-repo owner pulling the prepared patch at `/workspace/clinicsync-paid-basic.patch`.
+`main` on `github.com/Mubogi/clinicsync` is the source of truth; `origin/main`
+was at `07fd476` before the paid-BASIC work landed on top of it. Push with an
+account that has write access to `Mubogi/clinicsync` — the default
+`GITHUB_TOKEN` in this environment authenticates as `Arnoldmula`, which only has
+read access and will fail with HTTP 403.
